@@ -1,0 +1,604 @@
+// =============================================================================
+// AgriTech Analytics — Eventhouse KQL Database Creation Script
+// =============================================================================
+//
+// Purpose:  Bootstrap the Fabric Eventhouse database for the AgriTech Analytics
+//           greenhouse monitoring platform (BrightHarvest Greens + Mucci Valley
+//           Farms). Creates tables, ingestion mappings, retention policies,
+//           materialized views, and seeds reference data.
+//
+// Usage:    Paste each command block into the Fabric Eventhouse query editor
+//           and execute sequentially. KQL management commands (.create, .alter,
+//           .ingest) must be run one at a time — they cannot be batched.
+//
+// Tables:
+//   SensorTelemetry   — Real-time sensor readings (30-sec interval, per zone)
+//   EquipmentState    — Equipment actuator states (60-sec interval, per zone)
+//   WeatherData       — External weather conditions (5-min interval, per greenhouse)
+//   AlertEvents       — Anomaly / activator alert log
+//   ZoneConfig        — Reference table: zone → crop setpoints (seeded inline)
+//
+// Materialized Views:
+//   ZoneHourlySummary — Hourly aggregated sensor stats per zone
+//   ZoneLatestReading — Latest sensor snapshot per zone (live dashboard)
+//
+// =============================================================================
+
+
+// =============================================================================
+// SECTION 1 — Core Telemetry Tables
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// 1a. SensorTelemetry — primary real-time table
+//     One row per zone per 30-second reading. 10 sensor channels plus
+//     identifiers. This is the highest-volume table (~2.8M rows/day for
+//     16 zones at 30-sec intervals).
+// ---------------------------------------------------------------------------
+
+.create-merge table SensorTelemetry (
+    timestamp: datetime,
+    greenhouse_id: string,
+    zone_id: string,
+    air_temperature: real,
+    air_humidity: real,
+    co2_level: real,
+    par_light: real,
+    substrate_temperature: real,
+    substrate_moisture: real,
+    substrate_ec: real,
+    substrate_ph: real,
+    water_flow_rate: real,
+    vpd: real
+)
+
+
+// ---------------------------------------------------------------------------
+// 1b. EquipmentState — actuator / equipment status per zone
+//     One row per zone per 60-second interval. Tracks heating, cooling,
+//     vents, lights, CO₂ injection, curtains, and irrigation.
+// ---------------------------------------------------------------------------
+
+.create-merge table EquipmentState (
+    timestamp: datetime,
+    greenhouse_id: string,
+    zone_id: string,
+    heating_output: real,
+    cooling_output: real,
+    vent_position: real,
+    supplemental_light: bool,
+    supplemental_light_watts: real,
+    co2_injection_rate: real,
+    thermal_curtain: real,
+    irrigation_pump: bool,
+    irrigation_flow: real,
+    recirc_pump: bool
+)
+
+
+// ---------------------------------------------------------------------------
+// 1c. WeatherData — external conditions per greenhouse location
+//     One row per greenhouse per 5-minute interval. Used for correlating
+//     indoor conditions with outdoor weather (energy optimization, anomaly
+//     context).
+// ---------------------------------------------------------------------------
+
+.create-merge table WeatherData (
+    timestamp: datetime,
+    greenhouse_id: string,
+    outside_temperature: real,
+    outside_humidity: real,
+    wind_speed: real,
+    wind_direction: real,
+    precipitation: real,
+    solar_radiation: real,
+    barometric_pressure: real,
+    cloud_cover: real
+)
+
+
+// =============================================================================
+// SECTION 2 — Alert Events Table
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// Populated by anomaly detection logic and Data Activator rules.
+// Captures severity, type, message, and anomaly score for post-incident
+// analysis and the KQL graph blast-radius queries.
+// ---------------------------------------------------------------------------
+
+.create-merge table AlertEvents (
+    timestamp: datetime,
+    alert_id: string,
+    greenhouse_id: string,
+    zone_id: string,
+    severity: string,
+    alert_type: string,
+    message: string,
+    anomaly_score: real,
+    acknowledged: bool
+)
+
+
+// =============================================================================
+// SECTION 3 — Zone Configuration Reference Table
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// Static reference data: maps each zone to its greenhouse, crop, target
+// setpoints, and physical size. Seeded with inline data in Section 9.
+// ---------------------------------------------------------------------------
+
+.create-merge table ZoneConfig (
+    zone_id: string,
+    greenhouse_id: string,
+    zone_name: string,
+    crop_id: string,
+    crop_name: string,
+    target_temperature: real,
+    target_humidity: real,
+    target_co2: real,
+    target_ph: real,
+    target_ec: real,
+    size_sqft: int
+)
+
+
+// =============================================================================
+// SECTION 4 — Streaming Ingestion Policy
+// =============================================================================
+
+// Enable streaming ingestion on the high-frequency tables so that
+// Eventstream data lands with sub-second latency (required for the
+// live RTI dashboard demo).
+
+.alter table SensorTelemetry policy streamingingestion enable
+
+.alter table EquipmentState policy streamingingestion enable
+
+.alter table WeatherData policy streamingingestion enable
+
+.alter table AlertEvents policy streamingingestion enable
+
+
+// =============================================================================
+// SECTION 5 — JSON Ingestion Mappings (Event Hub → Eventhouse)
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// 5a. SensorTelemetryMapping
+//     Maps the JSON payload from the data-generator's SensorReading.to_dict()
+//     output (sent via Event Hub) to the SensorTelemetry table columns.
+// ---------------------------------------------------------------------------
+
+.create-or-alter table SensorTelemetry ingestion json mapping 'SensorTelemetryMapping'
+    '['
+    '  {"column":"timestamp",             "path":"$.timestamp",             "datatype":"datetime"},'
+    '  {"column":"greenhouse_id",         "path":"$.greenhouse_id",         "datatype":"string"},'
+    '  {"column":"zone_id",               "path":"$.zone_id",               "datatype":"string"},'
+    '  {"column":"air_temperature",       "path":"$.air_temperature",       "datatype":"real"},'
+    '  {"column":"air_humidity",          "path":"$.air_humidity",          "datatype":"real"},'
+    '  {"column":"co2_level",             "path":"$.co2_level",             "datatype":"real"},'
+    '  {"column":"par_light",             "path":"$.par_light",             "datatype":"real"},'
+    '  {"column":"substrate_temperature", "path":"$.substrate_temperature", "datatype":"real"},'
+    '  {"column":"substrate_moisture",    "path":"$.substrate_moisture",    "datatype":"real"},'
+    '  {"column":"substrate_ec",          "path":"$.substrate_ec",          "datatype":"real"},'
+    '  {"column":"substrate_ph",          "path":"$.substrate_ph",          "datatype":"real"},'
+    '  {"column":"water_flow_rate",       "path":"$.water_flow_rate",       "datatype":"real"},'
+    '  {"column":"vpd",                   "path":"$.vpd",                   "datatype":"real"}'
+    ']'
+
+
+// ---------------------------------------------------------------------------
+// 5b. EquipmentStateMapping
+//     Maps EquipmentState.to_dict() JSON to the EquipmentState table.
+// ---------------------------------------------------------------------------
+
+.create-or-alter table EquipmentState ingestion json mapping 'EquipmentStateMapping'
+    '['
+    '  {"column":"timestamp",               "path":"$.timestamp",               "datatype":"datetime"},'
+    '  {"column":"greenhouse_id",           "path":"$.greenhouse_id",           "datatype":"string"},'
+    '  {"column":"zone_id",                 "path":"$.zone_id",                 "datatype":"string"},'
+    '  {"column":"heating_output",          "path":"$.heating_output",          "datatype":"real"},'
+    '  {"column":"cooling_output",          "path":"$.cooling_output",          "datatype":"real"},'
+    '  {"column":"vent_position",           "path":"$.vent_position",           "datatype":"real"},'
+    '  {"column":"supplemental_light",      "path":"$.supplemental_light",      "datatype":"bool"},'
+    '  {"column":"supplemental_light_watts","path":"$.supplemental_light_watts","datatype":"real"},'
+    '  {"column":"co2_injection_rate",      "path":"$.co2_injection_rate",      "datatype":"real"},'
+    '  {"column":"thermal_curtain",         "path":"$.thermal_curtain",         "datatype":"real"},'
+    '  {"column":"irrigation_pump",         "path":"$.irrigation_pump",         "datatype":"bool"},'
+    '  {"column":"irrigation_flow",         "path":"$.irrigation_flow",         "datatype":"real"},'
+    '  {"column":"recirc_pump",             "path":"$.recirc_pump",             "datatype":"bool"}'
+    ']'
+
+
+// ---------------------------------------------------------------------------
+// 5c. WeatherDataMapping
+//     Maps WeatherReading.to_dict() JSON to the WeatherData table.
+// ---------------------------------------------------------------------------
+
+.create-or-alter table WeatherData ingestion json mapping 'WeatherDataMapping'
+    '['
+    '  {"column":"timestamp",            "path":"$.timestamp",            "datatype":"datetime"},'
+    '  {"column":"greenhouse_id",        "path":"$.greenhouse_id",        "datatype":"string"},'
+    '  {"column":"outside_temperature",  "path":"$.outside_temperature",  "datatype":"real"},'
+    '  {"column":"outside_humidity",     "path":"$.outside_humidity",     "datatype":"real"},'
+    '  {"column":"wind_speed",           "path":"$.wind_speed",           "datatype":"real"},'
+    '  {"column":"wind_direction",       "path":"$.wind_direction",       "datatype":"real"},'
+    '  {"column":"precipitation",        "path":"$.precipitation",        "datatype":"real"},'
+    '  {"column":"solar_radiation",      "path":"$.solar_radiation",      "datatype":"real"},'
+    '  {"column":"barometric_pressure",  "path":"$.barometric_pressure",  "datatype":"real"},'
+    '  {"column":"cloud_cover",          "path":"$.cloud_cover",          "datatype":"real"}'
+    ']'
+
+
+// ---------------------------------------------------------------------------
+// 5d. AlertEventsMapping
+//     Maps alert JSON (from Activator or notebook output) to AlertEvents.
+// ---------------------------------------------------------------------------
+
+.create-or-alter table AlertEvents ingestion json mapping 'AlertEventsMapping'
+    '['
+    '  {"column":"timestamp",      "path":"$.timestamp",      "datatype":"datetime"},'
+    '  {"column":"alert_id",       "path":"$.alert_id",       "datatype":"string"},'
+    '  {"column":"greenhouse_id",  "path":"$.greenhouse_id",  "datatype":"string"},'
+    '  {"column":"zone_id",        "path":"$.zone_id",        "datatype":"string"},'
+    '  {"column":"severity",       "path":"$.severity",       "datatype":"string"},'
+    '  {"column":"alert_type",     "path":"$.alert_type",     "datatype":"string"},'
+    '  {"column":"message",        "path":"$.message",        "datatype":"string"},'
+    '  {"column":"anomaly_score",  "path":"$.anomaly_score",  "datatype":"real"},'
+    '  {"column":"acknowledged",   "path":"$.acknowledged",   "datatype":"bool"}'
+    ']'
+
+
+// =============================================================================
+// SECTION 6 — Retention & Caching Policies
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// High-frequency telemetry tables: 90 days hot cache, 2-year soft delete.
+// The hot cache keeps 3 months of data on SSD for fast dashboard queries;
+// older data remains queryable from cold storage for trend analysis.
+// ---------------------------------------------------------------------------
+
+// --- SensorTelemetry ---
+.alter table SensorTelemetry policy retention softdelete = 730d
+
+.alter table SensorTelemetry policy caching hot = 90d
+
+// --- EquipmentState ---
+.alter table EquipmentState policy retention softdelete = 730d
+
+.alter table EquipmentState policy caching hot = 90d
+
+// --- WeatherData ---
+.alter table WeatherData policy retention softdelete = 730d
+
+.alter table WeatherData policy caching hot = 90d
+
+// ---------------------------------------------------------------------------
+// AlertEvents: 365 days hot cache (alerts are low-volume, high-value;
+// keep the full year in hot cache for incident investigations).
+// ---------------------------------------------------------------------------
+
+.alter table AlertEvents policy retention softdelete = 730d
+
+.alter table AlertEvents policy caching hot = 365d
+
+// ---------------------------------------------------------------------------
+// ZoneConfig: static reference — no retention policy needed (tiny table).
+// ---------------------------------------------------------------------------
+
+
+// =============================================================================
+// SECTION 7 — Partitioning Policy (optional performance optimization)
+// =============================================================================
+
+// Partition SensorTelemetry by greenhouse_id for query-time pruning.
+// Most dashboard queries filter to one greenhouse; this cuts scan volume in half.
+
+.alter table SensorTelemetry policy partitioning
+```
+{
+  "PartitionKeys": [
+    {
+      "ColumnName": "greenhouse_id",
+      "Kind": "Hash",
+      "Properties": {
+        "Function": "XxHash64",
+        "MaxPartitionCount": 16,
+        "PartitionAssignmentMode": "Uniform"
+      }
+    }
+  ]
+}
+```
+
+
+// =============================================================================
+// SECTION 8 — Materialized Views
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// 8a. ZoneHourlySummary
+//     Pre-aggregated hourly statistics per zone. Powers time-series charts on
+//     the executive dashboard without scanning the full SensorTelemetry table.
+//     Columns: avg/min/max temp, avg humidity, avg CO₂, avg PAR, avg VPD,
+//     avg EC, avg pH, reading count.
+// ---------------------------------------------------------------------------
+
+.create materialized-view with (backfill = true) ZoneHourlySummary on table SensorTelemetry {
+    SensorTelemetry
+    | summarize
+        avg_temp = avg(air_temperature),
+        min_temp = min(air_temperature),
+        max_temp = max(air_temperature),
+        avg_humidity = avg(air_humidity),
+        avg_co2 = avg(co2_level),
+        avg_par = avg(par_light),
+        avg_vpd = avg(vpd),
+        avg_substrate_temp = avg(substrate_temperature),
+        avg_substrate_moisture = avg(substrate_moisture),
+        avg_ec = avg(substrate_ec),
+        avg_ph = avg(substrate_ph),
+        avg_water_flow = avg(water_flow_rate),
+        reading_count = count()
+    by zone_id, greenhouse_id, bin(timestamp, 1h)
+}
+
+
+// ---------------------------------------------------------------------------
+// 8b. ZoneLatestReading
+//     Returns the single most recent sensor reading per zone. This is the
+//     workhorse behind the "Current Zone Status" tiles on the RTI dashboard.
+//     Uses arg_max to grab the full row for the latest timestamp per zone.
+// ---------------------------------------------------------------------------
+
+.create materialized-view with (backfill = true) ZoneLatestReading on table SensorTelemetry {
+    SensorTelemetry
+    | summarize arg_max(timestamp, *) by zone_id
+}
+
+
+// ---------------------------------------------------------------------------
+// 8c. EquipmentLatestState
+//     Most recent equipment state per zone — powers the equipment status panel.
+// ---------------------------------------------------------------------------
+
+.create materialized-view with (backfill = true) EquipmentLatestState on table EquipmentState {
+    EquipmentState
+    | summarize arg_max(timestamp, *) by zone_id
+}
+
+
+// ---------------------------------------------------------------------------
+// 8d. DailyAlertSummary
+//     Daily alert counts by greenhouse, severity, and type — for the anomaly
+//     trend chart on the operations dashboard.
+// ---------------------------------------------------------------------------
+
+.create materialized-view with (backfill = true) DailyAlertSummary on table AlertEvents {
+    AlertEvents
+    | summarize
+        alert_count = count(),
+        avg_anomaly_score = avg(anomaly_score),
+        acknowledged_count = countif(acknowledged)
+    by greenhouse_id, severity, alert_type, bin(timestamp, 1d)
+}
+
+
+// =============================================================================
+// SECTION 9 — Seed ZoneConfig Reference Data
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// Inline ingest of all 16 grow zones with their crop setpoints.
+// Derived from config.py: zone → crop mapping, crop optimal setpoints,
+// and zone physical size.
+//
+// Columns: zone_id, greenhouse_id, zone_name, crop_id, crop_name,
+//          target_temperature, target_humidity, target_co2, target_ph,
+//          target_ec, size_sqft
+// ---------------------------------------------------------------------------
+
+.ingest inline into table ZoneConfig <|
+BH-Z01,brightharvest,Zone 1,baby_spinach,Baby Spinach,18.0,70.0,800,6.0,1.8,25000
+BH-Z02,brightharvest,Zone 2,baby_spinach,Baby Spinach,18.0,70.0,800,6.0,1.8,25000
+BH-Z03,brightharvest,Zone 3,romaine,Romaine Lettuce,20.0,65.0,900,6.2,2.0,25000
+BH-Z04,brightharvest,Zone 4,romaine,Romaine Lettuce,20.0,65.0,900,6.2,2.0,25000
+BH-Z05,brightharvest,Zone 5,arugula,Arugula,19.0,68.0,850,6.0,1.6,25000
+BH-Z06,brightharvest,Zone 6,arugula,Arugula,19.0,68.0,850,6.0,1.6,25000
+BH-Z07,brightharvest,Zone 7,basil,Basil,24.0,60.0,1000,5.8,1.4,25000
+BH-Z08,brightharvest,Zone 8,basil,Basil,24.0,60.0,1000,5.8,1.4,25000
+MV-Z01,mucci-valley,Zone 1,cocktail_tomato,Cocktail Tomato,23.0,70.0,1000,5.8,2.8,31250
+MV-Z02,mucci-valley,Zone 2,cocktail_tomato,Cocktail Tomato,23.0,70.0,1000,5.8,2.8,31250
+MV-Z03,mucci-valley,Zone 3,bell_pepper,Bell Pepper,22.0,65.0,900,6.0,2.5,31250
+MV-Z04,mucci-valley,Zone 4,bell_pepper,Bell Pepper,22.0,65.0,900,6.0,2.5,31250
+MV-Z05,mucci-valley,Zone 5,mini_cucumber,Mini Cucumber,24.0,75.0,900,5.8,2.2,31250
+MV-Z06,mucci-valley,Zone 6,mini_cucumber,Mini Cucumber,24.0,75.0,900,5.8,2.2,31250
+MV-Z07,mucci-valley,Zone 7,strawberry,Strawberry,20.0,65.0,800,5.8,1.4,31250
+MV-Z08,mucci-valley,Zone 8,strawberry,Strawberry,20.0,65.0,800,5.8,1.4,31250
+
+
+// =============================================================================
+// SECTION 10 — Utility Functions
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// 10a. Sensor deviation function
+//      Returns how far each sensor channel is from the zone's crop setpoint.
+//      Useful for anomaly scoring and dashboard deviation indicators.
+// ---------------------------------------------------------------------------
+
+.create-or-alter function with (docstring = "Calculate sensor deviation from crop setpoints for a given zone", folder = "AgriTech") 
+ZoneSensorDeviation(target_zone_id: string, lookback: timespan = 1h) {
+    let config = ZoneConfig | where zone_id == target_zone_id;
+    let target_temp = toscalar(config | project target_temperature);
+    let target_hum = toscalar(config | project target_humidity);
+    let target_co2 = toscalar(config | project target_co2);
+    let target_ph = toscalar(config | project target_ph);
+    let target_ec = toscalar(config | project target_ec);
+    SensorTelemetry
+    | where zone_id == target_zone_id
+    | where timestamp > ago(lookback)
+    | extend
+        temp_deviation = air_temperature - target_temp,
+        humidity_deviation = air_humidity - target_hum,
+        co2_deviation = co2_level - target_co2,
+        ph_deviation = substrate_ph - target_ph,
+        ec_deviation = substrate_ec - target_ec
+    | project
+        timestamp, zone_id, greenhouse_id,
+        air_temperature, temp_deviation,
+        air_humidity, humidity_deviation,
+        co2_level, co2_deviation,
+        substrate_ph, ph_deviation,
+        substrate_ec, ec_deviation,
+        par_light, vpd, water_flow_rate,
+        substrate_temperature, substrate_moisture
+}
+
+
+// ---------------------------------------------------------------------------
+// 10b. Anomaly detection function
+//      Uses series_decompose_anomalies to detect outliers in the sensor
+//      time-series for a given zone and metric. Returns anomaly flags and
+//      scores for the requested lookback period.
+// ---------------------------------------------------------------------------
+
+.create-or-alter function with (docstring = "Detect anomalies in a sensor metric for a zone using series_decompose_anomalies", folder = "AgriTech") 
+DetectSensorAnomalies(target_zone_id: string, lookback: timespan = 6h, bin_size: timespan = 5m) {
+    SensorTelemetry
+    | where zone_id == target_zone_id
+    | where timestamp > ago(lookback)
+    | summarize
+        avg_temp = avg(air_temperature),
+        avg_humidity = avg(air_humidity),
+        avg_co2 = avg(co2_level),
+        avg_vpd = avg(vpd),
+        avg_ph = avg(substrate_ph),
+        avg_ec = avg(substrate_ec),
+        avg_moisture = avg(substrate_moisture)
+    by bin(timestamp, bin_size)
+    | order by timestamp asc
+    | summarize
+        ts = make_list(timestamp),
+        temp_series = make_list(avg_temp),
+        humidity_series = make_list(avg_humidity),
+        co2_series = make_list(avg_co2),
+        vpd_series = make_list(avg_vpd)
+    | extend temp_anomalies = series_decompose_anomalies(temp_series)
+    | extend humidity_anomalies = series_decompose_anomalies(humidity_series)
+    | extend co2_anomalies = series_decompose_anomalies(co2_series)
+    | mv-expand
+        ts to typeof(datetime),
+        temp_series to typeof(real),
+        humidity_series to typeof(real),
+        co2_series to typeof(real),
+        vpd_series to typeof(real),
+        temp_anomalies to typeof(real),
+        humidity_anomalies to typeof(real),
+        co2_anomalies to typeof(real)
+    | project
+        timestamp = ts,
+        zone_id = target_zone_id,
+        avg_temp = temp_series,
+        temp_anomaly_flag = temp_anomalies,
+        avg_humidity = humidity_series,
+        humidity_anomaly_flag = humidity_anomalies,
+        avg_co2 = co2_series,
+        co2_anomaly_flag = co2_anomalies,
+        avg_vpd = vpd_series
+    | where temp_anomaly_flag != 0 or humidity_anomaly_flag != 0 or co2_anomaly_flag != 0
+}
+
+
+// ---------------------------------------------------------------------------
+// 10c. Zone status summary function
+//      Returns a single-row status for each zone: latest readings, deviation
+//      from setpoints, and a simple health score (0–100).
+// ---------------------------------------------------------------------------
+
+.create-or-alter function with (docstring = "Dashboard-ready zone status with health score", folder = "AgriTech")
+ZoneStatusDashboard() {
+    ZoneLatestReading
+    | join kind=inner ZoneConfig on zone_id
+    | extend
+        temp_deviation = abs(air_temperature - target_temperature),
+        humidity_deviation = abs(air_humidity - target_humidity),
+        co2_deviation = abs(co2_level - target_co2),
+        ph_deviation = abs(substrate_ph - target_ph),
+        ec_deviation = abs(substrate_ec - target_ec)
+    | extend
+        // Health score: start at 100, penalize proportionally for deviations
+        health_score = max_of(0.0,
+            100.0
+            - (temp_deviation * 5.0)        // 1°C off = -5 points
+            - (humidity_deviation * 1.0)     // 1% off = -1 point
+            - (co2_deviation * 0.02)         // 50 ppm off = -1 point
+            - (ph_deviation * 20.0)          // 0.1 pH off = -2 points
+            - (ec_deviation * 10.0)          // 0.1 mS/cm off = -1 point
+        )
+    | project
+        zone_id,
+        greenhouse_id = ZoneLatestReading.greenhouse_id,
+        crop_name,
+        zone_name,
+        timestamp,
+        air_temperature, target_temperature, temp_deviation,
+        air_humidity, target_humidity, humidity_deviation,
+        co2_level, target_co2, co2_deviation,
+        substrate_ph, target_ph, ph_deviation,
+        substrate_ec, target_ec, ec_deviation,
+        par_light, vpd, water_flow_rate,
+        substrate_temperature, substrate_moisture,
+        health_score
+    | order by greenhouse_id asc, zone_id asc
+}
+
+
+// =============================================================================
+// SECTION 11 — Update Policies (optional — for derived enrichment)
+// =============================================================================
+
+// Placeholder: If you need to automatically enrich incoming telemetry
+// (e.g., join with ZoneConfig to add crop_name on ingest), define an
+// update policy here. Example:
+//
+// .create-or-alter function SensorTelemetryEnriched() {
+//     SensorTelemetry
+//     | join kind=inner ZoneConfig on zone_id
+//     | project-away zone_id1, greenhouse_id1
+// }
+//
+// .alter table EnrichedTelemetry policy update
+//     @'[{"Source":"SensorTelemetry","Query":"SensorTelemetryEnriched()",
+//         "IsEnabled":true,"IsTransactional":true}]'
+
+
+// =============================================================================
+// VERIFICATION QUERIES — Run after setup to confirm everything is in place
+// =============================================================================
+
+// Check all tables were created:
+// .show tables
+
+// Check ingestion mappings:
+// .show table SensorTelemetry ingestion json mappings
+// .show table EquipmentState ingestion json mappings
+// .show table WeatherData ingestion json mappings
+// .show table AlertEvents ingestion json mappings
+
+// Verify ZoneConfig seed data (should return 16 rows):
+// ZoneConfig | count
+// ZoneConfig | order by zone_id asc
+
+// Check materialized views:
+// .show materialized-views
+
+// Check retention policies:
+// .show table SensorTelemetry policy retention
+// .show table SensorTelemetry policy caching
+
+// Check stored functions:
+// .show functions
