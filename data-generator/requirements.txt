@@ -1,0 +1,7 @@
+numpy>=1.26
+pandas>=2.1
+pyarrow>=14.0
+azure-eventhub>=5.11
+click>=8.1
+faker>=22.0
+rich>=13.0
