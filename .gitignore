@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generated data
+sample-data/*.parquet
+sample-data/*.csv
+sample-data/**/*.parquet
+sample-data/**/*.csv
+
+# Secrets
+.env
+*.env.local
+connection-strings.json
+
+# Fabric artifacts (local caches)
+*.pbix
