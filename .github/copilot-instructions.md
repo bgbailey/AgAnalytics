@@ -6,12 +6,12 @@ This is a **presales demo** for a large North American greenhouse agriculture co
 
 **Target audience:** C-level and VP-level executives at the customer, plus their technical evaluation team. The demo must be visually impressive, data-realistic, and tell a compelling story about moving from reactive to predictive operations.
 
-**Critical rule:** The fictional company is called **"Cox Farms AgriTech"** internally, but in ALL code, config, UI labels, documentation, and generated data, use the fictional brand names:
+**Critical rule:** This demo is for a real customer in the greenhouse agriculture space. In ALL code, config, UI labels, documentation, and generated data, use ONLY these fictional brand names:
 - **BrightHarvest Greens** — the US leafy greens greenhouse (Rochelle, Illinois)
 - **Mucci Valley Farms** — the Canadian vine crop greenhouse (Kingsville, Ontario)
 - **AgriTech Analytics** — the parent company umbrella name in dashboards
 
-Do NOT reference the real customer name ("Cox Farms", "Cox Enterprises", "BrightFarms", or "Mucci Farms") anywhere in code, data, or UI. The demo should feel like it *could* be their data without naming them directly.
+Do NOT reference any real company names anywhere in code, data, UI, or documentation. The demo should feel like it *could* be the customer's data without naming them directly. The only place real names appear is this copilot guidance file, for context about the customer scenario.
 
 ---
 
