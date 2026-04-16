@@ -1,0 +1,1287 @@
+/// ============================================================
+/// TMDL — AgriTech Analytics Direct Lake Semantic Model
+/// ============================================================
+///
+/// 12 tables  (6 fact, 6 dimension)  •  14 relationships
+/// 30 DAX measures  •  2 hierarchies  •  Direct Lake mode
+///
+/// Gold-layer Delta tables in OneLake are read directly —
+/// no Import refresh, no data duplication.
+///
+/// Deploy: update the DatabaseQuery expression with your
+///         Lakehouse SQL endpoint and database name.
+/// ============================================================
+
+model Model
+	culture: en-US
+	defaultPowerBIDataSourceVersion: powerBI_V3
+	sourceQueryCulture: en-US
+	defaultMode: directLake
+	description: AgriTech Analytics — greenhouse operations analytics across BrightHarvest Greens (US) and Mucci Valley Farms (Canada). Direct Lake over OneLake Gold-layer Delta tables.
+
+	/// --------------------------------------------------------
+	/// Named expression — Lakehouse connection
+	/// Replace placeholders before deployment
+	/// --------------------------------------------------------
+
+	expression DatabaseQuery =
+		let
+			database = Sql.Database("{{LAKEHOUSE_SQL_ENDPOINT}}", "{{LAKEHOUSE_DATABASE}}")
+		in
+			database
+		lineageTag: lt-expr-dbquery
+
+	/// --------------------------------------------------------
+	/// RELATIONSHIPS  (14 total — star schema)
+	/// fromColumn = many side (fact FK)
+	/// toColumn   = one side  (dimension PK)
+	/// --------------------------------------------------------
+
+	/// --- fact_daily_harvest → dimensions ---
+
+	relationship rel-harvest-to-date
+		fromColumn: fact_daily_harvest.harvest_date
+		toColumn: dim_date.date_key
+
+	relationship rel-harvest-to-zone
+		fromColumn: fact_daily_harvest.zone_id
+		toColumn: dim_zone.zone_id
+
+	relationship rel-harvest-to-greenhouse
+		fromColumn: fact_daily_harvest.greenhouse_id
+		toColumn: dim_greenhouse.greenhouse_id
+
+	relationship rel-harvest-to-crop
+		fromColumn: fact_daily_harvest.crop_id
+		toColumn: dim_crop.crop_id
+
+	/// --- fact_zone_daily_environment → dimensions ---
+
+	relationship rel-env-to-date
+		fromColumn: fact_zone_daily_environment.date
+		toColumn: dim_date.date_key
+
+	relationship rel-env-to-zone
+		fromColumn: fact_zone_daily_environment.zone_id
+		toColumn: dim_zone.zone_id
+
+	/// --- fact_daily_energy → dimensions ---
+
+	relationship rel-energy-to-date
+		fromColumn: fact_daily_energy.date
+		toColumn: dim_date.date_key
+
+	relationship rel-energy-to-greenhouse
+		fromColumn: fact_daily_energy.greenhouse_id
+		toColumn: dim_greenhouse.greenhouse_id
+
+	/// --- fact_shipments → dimensions ---
+
+	relationship rel-ship-to-date
+		fromColumn: fact_shipments.ship_date
+		toColumn: dim_date.date_key
+
+	relationship rel-ship-to-customer
+		fromColumn: fact_shipments.customer_id
+		toColumn: dim_customer.customer_id
+
+	relationship rel-ship-to-product
+		fromColumn: fact_shipments.product_id
+		toColumn: dim_product.product_id
+
+	/// --- fact_weekly_crop_health → dimensions ---
+
+	relationship rel-crop-health-to-date
+		fromColumn: fact_weekly_crop_health.week_start
+		toColumn: dim_date.date_key
+
+	relationship rel-crop-health-to-zone
+		fromColumn: fact_weekly_crop_health.zone_id
+		toColumn: dim_zone.zone_id
+
+	/// --- fact_anomaly_events → dimensions ---
+
+	relationship rel-anomaly-to-greenhouse
+		fromColumn: fact_anomaly_events.greenhouse_id
+		toColumn: dim_greenhouse.greenhouse_id
+
+
+/// ============================================================
+///  FACT TABLES
+/// ============================================================
+
+/// ---------- fact_daily_harvest ----------
+
+table fact_daily_harvest
+	lineageTag: lt-tbl-fact-harvest
+
+	/// --- Measures: Yield & Production ---
+
+	measure 'Total Harvest (kg)' = SUM(fact_daily_harvest[harvest_weight_kg])
+		formatString: #,##0.0
+		lineageTag: lt-m-total-harvest
+
+	measure 'Yield per SqFt (kg)' =
+		DIVIDE(
+			[Total Harvest (kg)],
+			CALCULATE(
+				SUM(dim_zone[size_sqft]),
+				ALLEXCEPT(dim_zone, dim_zone[zone_id])
+			) / 10.764
+		)
+		formatString: #,##0.000
+		lineageTag: lt-m-yield-per-sqft
+
+	measure 'Grade A %' =
+		DIVIDE(
+			SUMX(
+				fact_daily_harvest,
+				fact_daily_harvest[harvest_weight_kg] * fact_daily_harvest[grade_a_pct] / 100
+			),
+			[Total Harvest (kg)]
+		) * 100
+		formatString: #,##0.0"%"
+		lineageTag: lt-m-grade-a-pct
+
+	measure 'YoY Yield Growth %' =
+		VAR CurrentYield = [Total Harvest (kg)]
+		VAR PriorYield =
+			CALCULATE(
+				[Total Harvest (kg)],
+				SAMEPERIODLASTYEAR(dim_date[date])
+			)
+		RETURN
+			DIVIDE(CurrentYield - PriorYield, PriorYield) * 100
+		formatString: #,##0.0"%"
+		lineageTag: lt-m-yoy-yield
+
+	measure 'Revenue (USD)' = SUM(fact_daily_harvest[revenue_estimate_usd])
+		formatString: \$#,##0.00
+		lineageTag: lt-m-revenue
+
+	measure 'Waste %' =
+		DIVIDE(
+			SUM(fact_daily_harvest[waste_kg]),
+			SUM(fact_daily_harvest[harvest_weight_kg]) + SUM(fact_daily_harvest[waste_kg])
+		) * 100
+		formatString: #,##0.0"%"
+		lineageTag: lt-m-waste-pct
+
+	measure 'Total Units Harvested' = SUM(fact_daily_harvest[harvest_units])
+		formatString: #,##0
+		lineageTag: lt-m-total-units
+
+	measure 'Avg Cycle Length (days)' = AVERAGE(fact_daily_harvest[days_to_harvest])
+		formatString: #,##0.0
+		lineageTag: lt-m-avg-cycle
+
+	/// --- Columns ---
+
+	column harvest_date
+		dataType: dateTime
+		formatString: Short Date
+		lineageTag: lt-col-harvest-date
+		summarizeBy: none
+		sourceColumn: harvest_date
+
+	column zone_id
+		dataType: string
+		lineageTag: lt-col-harvest-zone
+		summarizeBy: none
+		sourceColumn: zone_id
+		isHidden
+
+	column greenhouse_id
+		dataType: string
+		lineageTag: lt-col-harvest-gh
+		summarizeBy: none
+		sourceColumn: greenhouse_id
+		isHidden
+
+	column crop_id
+		dataType: string
+		lineageTag: lt-col-harvest-crop
+		summarizeBy: none
+		sourceColumn: crop_id
+		isHidden
+
+	column harvest_weight_kg
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-harvest-weight
+		summarizeBy: sum
+		sourceColumn: harvest_weight_kg
+
+	column harvest_units
+		dataType: int64
+		formatString: #,##0
+		lineageTag: lt-col-harvest-units
+		summarizeBy: sum
+		sourceColumn: harvest_units
+
+	column grade_a_pct
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-harvest-grade-a
+		summarizeBy: average
+		sourceColumn: grade_a_pct
+
+	column grade_b_pct
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-harvest-grade-b
+		summarizeBy: average
+		sourceColumn: grade_b_pct
+
+	column grade_c_pct
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-harvest-grade-c
+		summarizeBy: average
+		sourceColumn: grade_c_pct
+
+	column waste_kg
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-harvest-waste
+		summarizeBy: sum
+		sourceColumn: waste_kg
+
+	column waste_pct
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-harvest-waste-pct
+		summarizeBy: average
+		sourceColumn: waste_pct
+
+	column days_to_harvest
+		dataType: int64
+		formatString: #,##0
+		lineageTag: lt-col-harvest-days
+		summarizeBy: average
+		sourceColumn: days_to_harvest
+
+	column revenue_estimate_usd
+		dataType: double
+		formatString: \$#,##0.00
+		lineageTag: lt-col-harvest-revenue
+		summarizeBy: sum
+		sourceColumn: revenue_estimate_usd
+
+	partition fact_daily_harvest = entity
+		mode: directLake
+		source
+			entityName: fact_daily_harvest
+			schemaName: dbo
+			expressionSource: DatabaseQuery
+
+
+/// ---------- fact_zone_daily_environment ----------
+
+table fact_zone_daily_environment
+	lineageTag: lt-tbl-fact-env
+
+	/// --- Measures: Environmental ---
+
+	measure 'Avg Zone Temperature (°C)' = AVERAGE(fact_zone_daily_environment[avg_temp])
+		formatString: #,##0.0
+		lineageTag: lt-m-avg-temp
+
+	measure 'Optimal Hours %' =
+		DIVIDE(
+			SUM(fact_zone_daily_environment[hours_in_optimal_range]),
+			COUNTROWS(fact_zone_daily_environment) * 24
+		) * 100
+		formatString: #,##0.0"%"
+		lineageTag: lt-m-optimal-hours
+
+	measure 'Avg DLI (mol/m²/day)' = AVERAGE(fact_zone_daily_environment[total_dli])
+		formatString: #,##0.0
+		lineageTag: lt-m-avg-dli
+
+	measure 'Temp Excursion Hours' = SUM(fact_zone_daily_environment[temp_excursion_hours])
+		formatString: #,##0.0
+		lineageTag: lt-m-temp-excursion
+
+	/// --- Columns ---
+
+	column date
+		dataType: dateTime
+		formatString: Short Date
+		lineageTag: lt-col-env-date
+		summarizeBy: none
+		sourceColumn: date
+
+	column zone_id
+		dataType: string
+		lineageTag: lt-col-env-zone
+		summarizeBy: none
+		sourceColumn: zone_id
+		isHidden
+
+	column greenhouse_id
+		dataType: string
+		lineageTag: lt-col-env-gh
+		summarizeBy: none
+		sourceColumn: greenhouse_id
+		isHidden
+
+	column avg_temp
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-env-avg-temp
+		summarizeBy: average
+		sourceColumn: avg_temp
+
+	column min_temp
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-env-min-temp
+		summarizeBy: min
+		sourceColumn: min_temp
+
+	column max_temp
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-env-max-temp
+		summarizeBy: max
+		sourceColumn: max_temp
+
+	column avg_humidity
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-env-humidity
+		summarizeBy: average
+		sourceColumn: avg_humidity
+
+	column avg_co2
+		dataType: double
+		formatString: #,##0
+		lineageTag: lt-col-env-co2
+		summarizeBy: average
+		sourceColumn: avg_co2
+
+	column total_dli
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-env-dli
+		summarizeBy: average
+		sourceColumn: total_dli
+
+	column avg_vpd
+		dataType: double
+		formatString: #,##0.00
+		lineageTag: lt-col-env-vpd
+		summarizeBy: average
+		sourceColumn: avg_vpd
+
+	column avg_ec
+		dataType: double
+		formatString: #,##0.00
+		lineageTag: lt-col-env-ec
+		summarizeBy: average
+		sourceColumn: avg_ec
+
+	column avg_ph
+		dataType: double
+		formatString: #,##0.00
+		lineageTag: lt-col-env-ph
+		summarizeBy: average
+		sourceColumn: avg_ph
+
+	column hours_in_optimal_range
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-env-optimal-hrs
+		summarizeBy: sum
+		sourceColumn: hours_in_optimal_range
+
+	column temp_excursion_hours
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-env-excursion
+		summarizeBy: sum
+		sourceColumn: temp_excursion_hours
+
+	partition fact_zone_daily_environment = entity
+		mode: directLake
+		source
+			entityName: fact_zone_daily_environment
+			schemaName: dbo
+			expressionSource: DatabaseQuery
+
+
+/// ---------- fact_daily_energy ----------
+
+table fact_daily_energy
+	lineageTag: lt-tbl-fact-energy
+
+	/// --- Measures: Energy & Sustainability ---
+
+	measure 'Energy Cost (USD)' = SUM(fact_daily_energy[energy_cost_usd])
+		formatString: \$#,##0.00
+		lineageTag: lt-m-energy-cost
+
+	measure 'Energy Cost per Kg' =
+		DIVIDE(
+			[Energy Cost (USD)],
+			[Total Harvest (kg)]
+		)
+		formatString: \$#,##0.00
+		lineageTag: lt-m-energy-per-kg
+
+	measure 'YoY Energy Efficiency %' =
+		VAR CurrentCPK = [Energy Cost per Kg]
+		VAR PriorCPK =
+			CALCULATE(
+				[Energy Cost per Kg],
+				SAMEPERIODLASTYEAR(dim_date[date])
+			)
+		RETURN
+			DIVIDE(PriorCPK - CurrentCPK, PriorCPK) * 100
+		formatString: #,##0.0"%"
+		lineageTag: lt-m-yoy-energy
+
+	measure 'Water Recycling Rate %' =
+		DIVIDE(
+			SUM(fact_daily_energy[water_recycled_liters]),
+			SUM(fact_daily_energy[water_liters])
+		) * 100
+		formatString: #,##0.0"%"
+		lineageTag: lt-m-water-recycle
+
+	measure 'Carbon Footprint (kg CO2e)' =
+		SUM(fact_daily_energy[electricity_kwh]) * 0.42 +
+		SUM(fact_daily_energy[natural_gas_m3]) * 1.93
+		formatString: #,##0.0
+		lineageTag: lt-m-carbon
+
+	measure 'Gas Usage (m³)' = SUM(fact_daily_energy[natural_gas_m3])
+		formatString: #,##0.0
+		lineageTag: lt-m-gas
+
+	measure 'Electricity (kWh)' = SUM(fact_daily_energy[electricity_kwh])
+		formatString: #,##0.0
+		lineageTag: lt-m-electricity
+
+	measure 'Water Usage (L)' = SUM(fact_daily_energy[water_liters])
+		formatString: #,##0.0
+		lineageTag: lt-m-water
+
+	/// --- Columns ---
+
+	column date
+		dataType: dateTime
+		formatString: Short Date
+		lineageTag: lt-col-energy-date
+		summarizeBy: none
+		sourceColumn: date
+
+	column greenhouse_id
+		dataType: string
+		lineageTag: lt-col-energy-gh
+		summarizeBy: none
+		sourceColumn: greenhouse_id
+		isHidden
+
+	column electricity_kwh
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-energy-elec
+		summarizeBy: sum
+		sourceColumn: electricity_kwh
+
+	column natural_gas_m3
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-energy-gas
+		summarizeBy: sum
+		sourceColumn: natural_gas_m3
+
+	column water_liters
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-energy-water
+		summarizeBy: sum
+		sourceColumn: water_liters
+
+	column water_recycled_liters
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-energy-recycled
+		summarizeBy: sum
+		sourceColumn: water_recycled_liters
+
+	column co2_purchased_kg
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-energy-co2
+		summarizeBy: sum
+		sourceColumn: co2_purchased_kg
+
+	column energy_cost_usd
+		dataType: double
+		formatString: \$#,##0.00
+		lineageTag: lt-col-energy-cost
+		summarizeBy: sum
+		sourceColumn: energy_cost_usd
+
+	column energy_per_kg_produce
+		dataType: double
+		formatString: \$#,##0.00
+		lineageTag: lt-col-energy-per-kg
+		summarizeBy: average
+		sourceColumn: energy_per_kg_produce
+
+	partition fact_daily_energy = entity
+		mode: directLake
+		source
+			entityName: fact_daily_energy
+			schemaName: dbo
+			expressionSource: DatabaseQuery
+
+
+/// ---------- fact_shipments ----------
+
+table fact_shipments
+	lineageTag: lt-tbl-fact-ship
+
+	/// --- Measures: Supply Chain ---
+
+	measure 'On-Time Delivery %' =
+		DIVIDE(
+			COUNTROWS(FILTER(fact_shipments, fact_shipments[on_time_flag] = TRUE())),
+			COUNTROWS(fact_shipments)
+		) * 100
+		formatString: #,##0.0"%"
+		lineageTag: lt-m-on-time
+
+	measure 'Cold Chain Compliance %' =
+		DIVIDE(
+			COUNTROWS(FILTER(fact_shipments, fact_shipments[cold_chain_compliant] = TRUE())),
+			COUNTROWS(fact_shipments)
+		) * 100
+		formatString: #,##0.0"%"
+		lineageTag: lt-m-cold-chain
+
+	measure 'Avg Shelf Life (days)' = AVERAGE(fact_shipments[shelf_life_remaining_days])
+		formatString: #,##0.0
+		lineageTag: lt-m-shelf-life
+
+	measure 'Cases Shipped' = SUM(fact_shipments[quantity_cases])
+		formatString: #,##0
+		lineageTag: lt-m-cases-shipped
+
+	measure 'Shipment Count' = COUNTROWS(fact_shipments)
+		formatString: #,##0
+		lineageTag: lt-m-ship-count
+
+	measure 'Fill Rate %' =
+		DIVIDE(
+			SUM(fact_shipments[quantity_cases]),
+			SUM(fact_shipments[quantity_ordered])
+		) * 100
+		formatString: #,##0.0"%"
+		lineageTag: lt-m-fill-rate
+
+	/// --- Columns ---
+
+	column ship_date
+		dataType: dateTime
+		formatString: Short Date
+		lineageTag: lt-col-ship-date
+		summarizeBy: none
+		sourceColumn: ship_date
+
+	column order_id
+		dataType: string
+		lineageTag: lt-col-ship-order
+		summarizeBy: none
+		sourceColumn: order_id
+
+	column greenhouse_id
+		dataType: string
+		lineageTag: lt-col-ship-gh
+		summarizeBy: none
+		sourceColumn: greenhouse_id
+		isHidden
+
+	column customer_id
+		dataType: string
+		lineageTag: lt-col-ship-cust
+		summarizeBy: none
+		sourceColumn: customer_id
+		isHidden
+
+	column product_id
+		dataType: string
+		lineageTag: lt-col-ship-prod
+		summarizeBy: none
+		sourceColumn: product_id
+		isHidden
+
+	column crop_id
+		dataType: string
+		lineageTag: lt-col-ship-crop
+		summarizeBy: none
+		sourceColumn: crop_id
+		isHidden
+
+	column quantity_cases
+		dataType: int64
+		formatString: #,##0
+		lineageTag: lt-col-ship-qty
+		summarizeBy: sum
+		sourceColumn: quantity_cases
+
+	column quantity_ordered
+		dataType: int64
+		formatString: #,##0
+		lineageTag: lt-col-ship-qty-ord
+		summarizeBy: sum
+		sourceColumn: quantity_ordered
+
+	column delivery_status
+		dataType: string
+		lineageTag: lt-col-ship-status
+		summarizeBy: none
+		sourceColumn: delivery_status
+
+	column cold_chain_compliant
+		dataType: boolean
+		lineageTag: lt-col-ship-cold
+		summarizeBy: none
+		sourceColumn: cold_chain_compliant
+
+	column shelf_life_remaining_days
+		dataType: int64
+		formatString: #,##0
+		lineageTag: lt-col-ship-shelf
+		summarizeBy: average
+		sourceColumn: shelf_life_remaining_days
+
+	column on_time_flag
+		dataType: boolean
+		lineageTag: lt-col-ship-ontime
+		summarizeBy: none
+		sourceColumn: on_time_flag
+
+	partition fact_shipments = entity
+		mode: directLake
+		source
+			entityName: fact_shipments
+			schemaName: dbo
+			expressionSource: DatabaseQuery
+
+
+/// ---------- fact_weekly_crop_health ----------
+
+table fact_weekly_crop_health
+	lineageTag: lt-tbl-fact-crop-health
+
+	column week_start
+		dataType: dateTime
+		formatString: Short Date
+		lineageTag: lt-col-ch-week
+		summarizeBy: none
+		sourceColumn: week_start
+
+	column zone_id
+		dataType: string
+		lineageTag: lt-col-ch-zone
+		summarizeBy: none
+		sourceColumn: zone_id
+		isHidden
+
+	column greenhouse_id
+		dataType: string
+		lineageTag: lt-col-ch-gh
+		summarizeBy: none
+		sourceColumn: greenhouse_id
+		isHidden
+
+	column crop_id
+		dataType: string
+		lineageTag: lt-col-ch-crop
+		summarizeBy: none
+		sourceColumn: crop_id
+		isHidden
+
+	column avg_plant_height_cm
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-ch-height
+		summarizeBy: average
+		sourceColumn: avg_plant_height_cm
+
+	column avg_leaf_count
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-ch-leaves
+		summarizeBy: average
+		sourceColumn: avg_leaf_count
+
+	column predicted_quality_grade
+		dataType: string
+		lineageTag: lt-col-ch-grade
+		summarizeBy: none
+		sourceColumn: predicted_quality_grade
+
+	column predicted_yield_kg
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-ch-yield
+		summarizeBy: sum
+		sourceColumn: predicted_yield_kg
+
+	partition fact_weekly_crop_health = entity
+		mode: directLake
+		source
+			entityName: fact_weekly_crop_health
+			schemaName: dbo
+			expressionSource: DatabaseQuery
+
+
+/// ---------- fact_anomaly_events ----------
+
+table fact_anomaly_events
+	lineageTag: lt-tbl-fact-anomaly
+
+	/// --- Measures: Anomaly & Risk ---
+
+	measure 'Prevented Loss (USD)' = SUM(fact_anomaly_events[prevented_loss_usd])
+		formatString: \$#,##0.00
+		lineageTag: lt-m-prevented-loss
+
+	measure 'Avg Response Time (min)' = AVERAGE(fact_anomaly_events[response_time_minutes])
+		formatString: #,##0.0
+		lineageTag: lt-m-response-time
+
+	measure 'Anomaly Count' = COUNTROWS(fact_anomaly_events)
+		formatString: #,##0
+		lineageTag: lt-m-anomaly-count
+
+	measure 'Days Since Last Anomaly' =
+		DATEDIFF(
+			MAXX(fact_anomaly_events, fact_anomaly_events[start_time]),
+			TODAY(),
+			DAY
+		)
+		formatString: #,##0
+		lineageTag: lt-m-days-since-anomaly
+
+	/// --- Columns ---
+
+	column event_id
+		dataType: string
+		lineageTag: lt-col-anom-id
+		summarizeBy: none
+		sourceColumn: event_id
+
+	column start_time
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: lt-col-anom-start
+		summarizeBy: none
+		sourceColumn: start_time
+
+	column end_time
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: lt-col-anom-end
+		summarizeBy: none
+		sourceColumn: end_time
+
+	column greenhouse_id
+		dataType: string
+		lineageTag: lt-col-anom-gh
+		summarizeBy: none
+		sourceColumn: greenhouse_id
+		isHidden
+
+	column zone_ids
+		dataType: string
+		lineageTag: lt-col-anom-zones
+		summarizeBy: none
+		sourceColumn: zone_ids
+
+	column anomaly_type
+		dataType: string
+		lineageTag: lt-col-anom-type
+		summarizeBy: none
+		sourceColumn: anomaly_type
+
+	column severity
+		dataType: string
+		lineageTag: lt-col-anom-severity
+		summarizeBy: none
+		sourceColumn: severity
+
+	column root_cause
+		dataType: string
+		lineageTag: lt-col-anom-cause
+		summarizeBy: none
+		sourceColumn: root_cause
+
+	column estimated_loss_usd
+		dataType: double
+		formatString: \$#,##0.00
+		lineageTag: lt-col-anom-est-loss
+		summarizeBy: sum
+		sourceColumn: estimated_loss_usd
+
+	column prevented_loss_usd
+		dataType: double
+		formatString: \$#,##0.00
+		lineageTag: lt-col-anom-prev-loss
+		summarizeBy: sum
+		sourceColumn: prevented_loss_usd
+
+	column response_time_minutes
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-anom-resp
+		summarizeBy: average
+		sourceColumn: response_time_minutes
+
+	column resolution_status
+		dataType: string
+		lineageTag: lt-col-anom-status
+		summarizeBy: none
+		sourceColumn: resolution_status
+
+	partition fact_anomaly_events = entity
+		mode: directLake
+		source
+			entityName: fact_anomaly_events
+			schemaName: dbo
+			expressionSource: DatabaseQuery
+
+
+/// ============================================================
+///  DIMENSION TABLES
+/// ============================================================
+
+/// ---------- dim_date ----------
+
+table dim_date
+	lineageTag: lt-tbl-dim-date
+	dataCategory: Time
+
+	column date_key
+		dataType: dateTime
+		formatString: Short Date
+		lineageTag: lt-col-date-key
+		summarizeBy: none
+		sourceColumn: date_key
+		isKey
+
+	column date
+		dataType: dateTime
+		formatString: Short Date
+		lineageTag: lt-col-date-date
+		summarizeBy: none
+		sourceColumn: date
+
+	column day_name
+		dataType: string
+		lineageTag: lt-col-date-dayname
+		summarizeBy: none
+		sourceColumn: day_name
+
+	column day_of_week
+		dataType: int64
+		formatString: 0
+		lineageTag: lt-col-date-dow
+		summarizeBy: none
+		sourceColumn: day_of_week
+
+	column week_num
+		dataType: int64
+		formatString: 0
+		lineageTag: lt-col-date-week
+		summarizeBy: none
+		sourceColumn: week_num
+
+	column month_name
+		dataType: string
+		lineageTag: lt-col-date-monthname
+		summarizeBy: none
+		sourceColumn: month_name
+
+	column month_num
+		dataType: int64
+		formatString: 0
+		lineageTag: lt-col-date-monthnum
+		summarizeBy: none
+		sourceColumn: month_num
+		sortByColumn: month_num
+
+	column quarter
+		dataType: string
+		lineageTag: lt-col-date-quarter
+		summarizeBy: none
+		sourceColumn: quarter
+
+	column year
+		dataType: int64
+		formatString: 0
+		lineageTag: lt-col-date-year
+		summarizeBy: none
+		sourceColumn: year
+
+	column fiscal_year
+		dataType: int64
+		formatString: 0
+		lineageTag: lt-col-date-fy
+		summarizeBy: none
+		sourceColumn: fiscal_year
+
+	column is_weekend
+		dataType: boolean
+		lineageTag: lt-col-date-weekend
+		summarizeBy: none
+		sourceColumn: is_weekend
+
+	column season
+		dataType: string
+		lineageTag: lt-col-date-season
+		summarizeBy: none
+		sourceColumn: season
+
+	column day_of_year
+		dataType: int64
+		formatString: 0
+		lineageTag: lt-col-date-doy
+		summarizeBy: none
+		sourceColumn: day_of_year
+
+	/// Date Hierarchy: Year > Quarter > Month > Date
+	hierarchy 'Date Hierarchy'
+		lineageTag: lt-hier-date
+
+		level Year
+			lineageTag: lt-hier-date-year
+			column: year
+
+		level Quarter
+			lineageTag: lt-hier-date-quarter
+			column: quarter
+
+		level Month
+			lineageTag: lt-hier-date-month
+			column: month_name
+
+		level Date
+			lineageTag: lt-hier-date-day
+			column: date
+
+	partition dim_date = entity
+		mode: directLake
+		source
+			entityName: dim_date
+			schemaName: dbo
+			expressionSource: DatabaseQuery
+
+
+/// ---------- dim_greenhouse ----------
+
+table dim_greenhouse
+	lineageTag: lt-tbl-dim-greenhouse
+
+	column greenhouse_id
+		dataType: string
+		lineageTag: lt-col-gh-id
+		summarizeBy: none
+		sourceColumn: greenhouse_id
+		isKey
+
+	column name
+		dataType: string
+		lineageTag: lt-col-gh-name
+		summarizeBy: none
+		sourceColumn: name
+
+	column location_city
+		dataType: string
+		lineageTag: lt-col-gh-city
+		summarizeBy: none
+		sourceColumn: location_city
+
+	column location_state
+		dataType: string
+		lineageTag: lt-col-gh-state
+		summarizeBy: none
+		sourceColumn: location_state
+
+	column country
+		dataType: string
+		lineageTag: lt-col-gh-country
+		summarizeBy: none
+		sourceColumn: country
+
+	column latitude
+		dataType: double
+		formatString: #,##0.000000
+		lineageTag: lt-col-gh-lat
+		summarizeBy: none
+		sourceColumn: latitude
+
+	column longitude
+		dataType: double
+		formatString: #,##0.000000
+		lineageTag: lt-col-gh-lon
+		summarizeBy: none
+		sourceColumn: longitude
+
+	column size_sqft
+		dataType: int64
+		formatString: #,##0
+		lineageTag: lt-col-gh-size
+		summarizeBy: sum
+		sourceColumn: size_sqft
+
+	column zone_count
+		dataType: int64
+		formatString: #,##0
+		lineageTag: lt-col-gh-zones
+		summarizeBy: sum
+		sourceColumn: zone_count
+
+	column growing_method
+		dataType: string
+		lineageTag: lt-col-gh-method
+		summarizeBy: none
+		sourceColumn: growing_method
+
+	/// Geography Hierarchy: Country > State > City
+	hierarchy Geography
+		lineageTag: lt-hier-geo
+
+		level Country
+			lineageTag: lt-hier-geo-country
+			column: country
+
+		level State
+			lineageTag: lt-hier-geo-state
+			column: location_state
+
+		level City
+			lineageTag: lt-hier-geo-city
+			column: location_city
+
+	partition dim_greenhouse = entity
+		mode: directLake
+		source
+			entityName: dim_greenhouse
+			schemaName: dbo
+			expressionSource: DatabaseQuery
+
+
+/// ---------- dim_zone ----------
+
+table dim_zone
+	lineageTag: lt-tbl-dim-zone
+
+	column zone_id
+		dataType: string
+		lineageTag: lt-col-zone-id
+		summarizeBy: none
+		sourceColumn: zone_id
+		isKey
+
+	column greenhouse_id
+		dataType: string
+		lineageTag: lt-col-zone-gh
+		summarizeBy: none
+		sourceColumn: greenhouse_id
+		isHidden
+
+	column zone_name
+		dataType: string
+		lineageTag: lt-col-zone-name
+		summarizeBy: none
+		sourceColumn: zone_name
+
+	column size_sqft
+		dataType: int64
+		formatString: #,##0
+		lineageTag: lt-col-zone-size
+		summarizeBy: sum
+		sourceColumn: size_sqft
+
+	column primary_crop_id
+		dataType: string
+		lineageTag: lt-col-zone-crop
+		summarizeBy: none
+		sourceColumn: primary_crop_id
+
+	partition dim_zone = entity
+		mode: directLake
+		source
+			entityName: dim_zone
+			schemaName: dbo
+			expressionSource: DatabaseQuery
+
+
+/// ---------- dim_crop ----------
+
+table dim_crop
+	lineageTag: lt-tbl-dim-crop
+
+	column crop_id
+		dataType: string
+		lineageTag: lt-col-crop-id
+		summarizeBy: none
+		sourceColumn: crop_id
+		isKey
+
+	column crop_name
+		dataType: string
+		lineageTag: lt-col-crop-name
+		summarizeBy: none
+		sourceColumn: crop_name
+
+	column crop_category
+		dataType: string
+		lineageTag: lt-col-crop-cat
+		summarizeBy: none
+		sourceColumn: crop_category
+
+	column growth_cycle_days
+		dataType: int64
+		formatString: #,##0
+		lineageTag: lt-col-crop-cycle
+		summarizeBy: average
+		sourceColumn: growth_cycle_days
+
+	column optimal_temp_c
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-crop-temp
+		summarizeBy: average
+		sourceColumn: optimal_temp_c
+
+	column optimal_humidity_pct
+		dataType: double
+		formatString: #,##0.0
+		lineageTag: lt-col-crop-humidity
+		summarizeBy: average
+		sourceColumn: optimal_humidity_pct
+
+	column market_price_per_kg_usd
+		dataType: double
+		formatString: \$#,##0.00
+		lineageTag: lt-col-crop-price
+		summarizeBy: average
+		sourceColumn: market_price_per_kg_usd
+
+	column shelf_life_days
+		dataType: int64
+		formatString: #,##0
+		lineageTag: lt-col-crop-shelf
+		summarizeBy: average
+		sourceColumn: shelf_life_days
+
+	partition dim_crop = entity
+		mode: directLake
+		source
+			entityName: dim_crop
+			schemaName: dbo
+			expressionSource: DatabaseQuery
+
+
+/// ---------- dim_customer ----------
+
+table dim_customer
+	lineageTag: lt-tbl-dim-customer
+
+	column customer_id
+		dataType: string
+		lineageTag: lt-col-cust-id
+		summarizeBy: none
+		sourceColumn: customer_id
+		isKey
+
+	column name
+		dataType: string
+		lineageTag: lt-col-cust-name
+		summarizeBy: none
+		sourceColumn: name
+
+	column region
+		dataType: string
+		lineageTag: lt-col-cust-region
+		summarizeBy: none
+		sourceColumn: region
+
+	column country
+		dataType: string
+		lineageTag: lt-col-cust-country
+		summarizeBy: none
+		sourceColumn: country
+
+	column delivery_frequency
+		dataType: string
+		lineageTag: lt-col-cust-freq
+		summarizeBy: none
+		sourceColumn: delivery_frequency
+
+	partition dim_customer = entity
+		mode: directLake
+		source
+			entityName: dim_customer
+			schemaName: dbo
+			expressionSource: DatabaseQuery
+
+
+/// ---------- dim_product ----------
+
+table dim_product
+	lineageTag: lt-tbl-dim-product
+
+	column product_id
+		dataType: string
+		lineageTag: lt-col-prod-id
+		summarizeBy: none
+		sourceColumn: product_id
+		isKey
+
+	column crop_id
+		dataType: string
+		lineageTag: lt-col-prod-crop
+		summarizeBy: none
+		sourceColumn: crop_id
+		isHidden
+
+	column product_name
+		dataType: string
+		lineageTag: lt-col-prod-name
+		summarizeBy: none
+		sourceColumn: product_name
+
+	column package_type
+		dataType: string
+		lineageTag: lt-col-prod-pkg
+		summarizeBy: none
+		sourceColumn: package_type
+
+	column package_weight_kg
+		dataType: double
+		formatString: #,##0.000
+		lineageTag: lt-col-prod-weight
+		summarizeBy: average
+		sourceColumn: package_weight_kg
+
+	column sku
+		dataType: string
+		lineageTag: lt-col-prod-sku
+		summarizeBy: none
+		sourceColumn: sku
+
+	partition dim_product = entity
+		mode: directLake
+		source
+			entityName: dim_product
+			schemaName: dbo
+			expressionSource: DatabaseQuery

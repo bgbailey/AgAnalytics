@@ -1,0 +1,213 @@
+// ============================================================
+// DAX MEASURES — AgriTech Analytics Direct Lake Semantic Model
+// Organized by business domain for the executive dashboard
+//
+// Tables:  6 fact tables, 6 dimension tables (Gold layer)
+// Model:   Direct Lake over OneLake Delta tables
+// Refresh: Zero-copy — no Import refresh needed
+// ============================================================
+
+
+// ============================================================
+// === YIELD & PRODUCTION ===
+// ============================================================
+// Home table: fact_daily_harvest
+
+// Total harvest weight across all selected filters
+Total Harvest (kg) =
+    SUM(fact_daily_harvest[harvest_weight_kg])
+
+// Yield per square metre — core greenhouse productivity metric
+// Converts zone size from sqft → m² (÷ 10.764) then divides
+Yield per SqFt (kg) =
+    DIVIDE(
+        [Total Harvest (kg)],
+        CALCULATE(
+            SUM(dim_zone[size_sqft]),
+            ALLEXCEPT(dim_zone, dim_zone[zone_id])
+        ) / 10.764
+    )
+
+// Premium quality percentage (Grade A weight ÷ total weight)
+Grade A % =
+    DIVIDE(
+        SUMX(
+            fact_daily_harvest,
+            fact_daily_harvest[harvest_weight_kg] * fact_daily_harvest[grade_a_pct] / 100
+        ),
+        [Total Harvest (kg)]
+    ) * 100
+
+// Year-over-Year yield growth — compares current period to same period last year
+YoY Yield Growth % =
+    VAR CurrentYield = [Total Harvest (kg)]
+    VAR PriorYield =
+        CALCULATE(
+            [Total Harvest (kg)],
+            SAMEPERIODLASTYEAR(dim_date[date])
+        )
+    RETURN
+        DIVIDE(CurrentYield - PriorYield, PriorYield) * 100
+
+// Total revenue estimate from harvested produce
+Revenue (USD) =
+    SUM(fact_daily_harvest[revenue_estimate_usd])
+
+// Food waste percentage (waste ÷ total harvested + waste)
+Waste % =
+    DIVIDE(
+        SUM(fact_daily_harvest[waste_kg]),
+        SUM(fact_daily_harvest[harvest_weight_kg]) + SUM(fact_daily_harvest[waste_kg])
+    ) * 100
+
+// Total harvest units (individual items or bunches)
+Total Units Harvested =
+    SUM(fact_daily_harvest[harvest_units])
+
+// Average days from planting to harvest — crop cycle efficiency
+Avg Cycle Length (days) =
+    AVERAGE(fact_daily_harvest[days_to_harvest])
+
+
+// ============================================================
+// === ENERGY & SUSTAINABILITY ===
+// ============================================================
+// Home table: fact_daily_energy
+
+// Total energy cost in USD
+Energy Cost (USD) =
+    SUM(fact_daily_energy[energy_cost_usd])
+
+// Energy cost per kilogram of produce — efficiency KPI
+Energy Cost per Kg =
+    DIVIDE(
+        [Energy Cost (USD)],
+        [Total Harvest (kg)]
+    )
+
+// YoY energy efficiency change (positive = improvement = cost per kg went down)
+YoY Energy Efficiency % =
+    VAR CurrentCPK = [Energy Cost per Kg]
+    VAR PriorCPK =
+        CALCULATE(
+            [Energy Cost per Kg],
+            SAMEPERIODLASTYEAR(dim_date[date])
+        )
+    RETURN
+        DIVIDE(PriorCPK - CurrentCPK, PriorCPK) * 100
+
+// Water recycling rate — sustainability metric
+Water Recycling Rate % =
+    DIVIDE(
+        SUM(fact_daily_energy[water_recycled_liters]),
+        SUM(fact_daily_energy[water_liters])
+    ) * 100
+
+// Carbon footprint estimate using standard emission factors
+// Electricity: 0.42 kg CO₂e/kWh (US grid avg)
+// Natural gas: 1.93 kg CO₂e/m³
+Carbon Footprint (kg CO2e) =
+    SUM(fact_daily_energy[electricity_kwh]) * 0.42 +
+    SUM(fact_daily_energy[natural_gas_m3]) * 1.93
+
+// Natural gas consumption in cubic metres
+Gas Usage (m³) =
+    SUM(fact_daily_energy[natural_gas_m3])
+
+// Electricity consumption in kilowatt-hours
+Electricity (kWh) =
+    SUM(fact_daily_energy[electricity_kwh])
+
+// Water consumption in litres
+Water Usage (L) =
+    SUM(fact_daily_energy[water_liters])
+
+
+// ============================================================
+// === SUPPLY CHAIN ===
+// ============================================================
+// Home table: fact_shipments
+
+// On-time delivery rate — percentage of shipments delivered on schedule
+On-Time Delivery % =
+    DIVIDE(
+        COUNTROWS(FILTER(fact_shipments, fact_shipments[on_time_flag] = TRUE())),
+        COUNTROWS(fact_shipments)
+    ) * 100
+
+// Cold chain compliance — percentage of shipments maintaining temp requirements
+Cold Chain Compliance % =
+    DIVIDE(
+        COUNTROWS(FILTER(fact_shipments, fact_shipments[cold_chain_compliant] = TRUE())),
+        COUNTROWS(fact_shipments)
+    ) * 100
+
+// Average remaining shelf life at point of delivery
+Avg Shelf Life (days) =
+    AVERAGE(fact_shipments[shelf_life_remaining_days])
+
+// Total cases shipped across all customers
+Cases Shipped =
+    SUM(fact_shipments[quantity_cases])
+
+// Total number of shipments
+Shipment Count =
+    COUNTROWS(fact_shipments)
+
+// Order fill rate — cases shipped vs cases ordered
+Fill Rate % =
+    DIVIDE(
+        SUM(fact_shipments[quantity_cases]),
+        SUM(fact_shipments[quantity_ordered])
+    ) * 100
+
+
+// ============================================================
+// === ANOMALY & RISK ===
+// ============================================================
+// Home table: fact_anomaly_events
+
+// Total prevented losses from early anomaly detection (USD)
+Prevented Loss (USD) =
+    SUM(fact_anomaly_events[prevented_loss_usd])
+
+// Average response time from anomaly detection to resolution
+Avg Response Time (min) =
+    AVERAGE(fact_anomaly_events[response_time_minutes])
+
+// Total anomaly events in the selected period
+Anomaly Count =
+    COUNTROWS(fact_anomaly_events)
+
+// Days since the most recent anomaly — operational stability indicator
+Days Since Last Anomaly =
+    DATEDIFF(
+        MAXX(fact_anomaly_events, fact_anomaly_events[start_time]),
+        TODAY(),
+        DAY
+    )
+
+
+// ============================================================
+// === ENVIRONMENTAL ===
+// ============================================================
+// Home table: fact_zone_daily_environment
+
+// Average air temperature across selected zones
+Avg Zone Temperature (°C) =
+    AVERAGE(fact_zone_daily_environment[avg_temp])
+
+// Percentage of time zones stay within optimal temperature range
+Optimal Hours % =
+    DIVIDE(
+        SUM(fact_zone_daily_environment[hours_in_optimal_range]),
+        COUNTROWS(fact_zone_daily_environment) * 24
+    ) * 100
+
+// Average Daily Light Integral — photosynthetically active radiation
+Avg DLI (mol/m²/day) =
+    AVERAGE(fact_zone_daily_environment[total_dli])
+
+// Total hours where temperature exceeded acceptable bounds
+Temp Excursion Hours =
+    SUM(fact_zone_daily_environment[temp_excursion_hours])
