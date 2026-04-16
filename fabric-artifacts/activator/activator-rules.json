@@ -1,0 +1,307 @@
+{
+  "activator_name": "AgriTech-Greenhouse-Alerts",
+  "description": "Data Activator rule definitions for AgriTech Analytics greenhouse monitoring. These rules detect anomalies in real-time sensor telemetry and trigger automated responses via Teams, email, and Fabric notebooks.",
+  "source_eventhouse": "AgriTech-Eventhouse",
+  "source_database": "AgriTech-DB",
+  "rules": [
+    {
+      "name": "Temperature Deviation Alert",
+      "description": "Fires when any zone's air temperature deviates more than 3°C from its crop setpoint for longer than 2 consecutive minutes. Covers both overheating (cooling failure, excess solar gain) and undercooling (HVAC failure, boiler offline).",
+      "enabled": true,
+      "source": {
+        "table": "SensorTelemetry",
+        "join_table": "ZoneConfig",
+        "join_key": "zone_id"
+      },
+      "object_id_column": "zone_id",
+      "grouping_columns": ["greenhouse_id", "zone_id"],
+      "measure": {
+        "expression": "abs(air_temperature - target_temperature)",
+        "alias": "temp_deviation_c"
+      },
+      "condition": {
+        "type": "BECOMES",
+        "operator": "GreaterThan",
+        "threshold": 3.0,
+        "sustained_duration_seconds": 120,
+        "evaluation_interval_seconds": 30,
+        "description": "Triggers when absolute temperature deviation exceeds 3°C for at least 2 minutes continuously"
+      },
+      "severity": "critical",
+      "actions": [
+        {
+          "type": "TeamsNotification",
+          "channel": "AgriTech-Alerts",
+          "template": {
+            "title": "🔴 Temperature Alert — {{zone_id}}",
+            "body": "Zone **{{zone_id}}** in **{{greenhouse_id}}** has deviated **{{temp_deviation_c}}°C** from setpoint.\n\n- Current: {{air_temperature}}°C\n- Target: {{target_temperature}}°C\n- Duration: >2 minutes\n- Crop at risk: {{crop_name}}",
+            "priority": "urgent"
+          }
+        },
+        {
+          "type": "Email",
+          "recipients": [
+            "ops-team@agritechanalytics.com",
+            "head-grower@agritechanalytics.com"
+          ],
+          "template": {
+            "subject": "[CRITICAL] Temperature Deviation in {{zone_id}} — {{greenhouse_id}}",
+            "body": "Automated alert from AgriTech Analytics Data Activator.\n\nZone: {{zone_id}}\nGreenhouse: {{greenhouse_id}}\nCurrent Temperature: {{air_temperature}}°C\nTarget Temperature: {{target_temperature}}°C\nDeviation: {{temp_deviation_c}}°C\nCrop: {{crop_name}}\nTimestamp: {{timestamp}}\n\nPlease investigate immediately. If this is an HVAC failure, follow the HVAC Failure runbook."
+          }
+        },
+        {
+          "type": "NotebookTrigger",
+          "notebook_name": "anomaly-response-hvac",
+          "workspace": "AgriTech-Analytics",
+          "parameters": {
+            "zone_id": "{{zone_id}}",
+            "greenhouse_id": "{{greenhouse_id}}",
+            "anomaly_type": "temperature-deviation",
+            "deviation_value": "{{temp_deviation_c}}"
+          },
+          "description": "Triggers the HVAC anomaly response notebook to log the incident, query blast radius via graph, and optionally close vents"
+        }
+      ],
+      "cooldown_minutes": 15,
+      "auto_resolve": {
+        "enabled": true,
+        "condition": "abs(air_temperature - target_temperature) <= 1.5",
+        "message": "✅ Temperature in {{zone_id}} has returned to within 1.5°C of setpoint."
+      }
+    },
+    {
+      "name": "Equipment Offline While Needed",
+      "description": "Fires when critical equipment is offline but environmental conditions require it. Two sub-conditions: (1) heating output = 0 when temperature is 2°C+ below setpoint, or (2) irrigation flow = 0 during a scheduled irrigation cycle when moisture is dropping.",
+      "enabled": true,
+      "source": {
+        "table": "EquipmentState",
+        "join_tables": ["SensorTelemetry", "ZoneConfig"],
+        "join_key": "zone_id"
+      },
+      "object_id_column": "zone_id",
+      "grouping_columns": ["greenhouse_id", "zone_id"],
+      "condition": {
+        "type": "OR",
+        "sub_conditions": [
+          {
+            "name": "Heating Offline While Cold",
+            "expression": "heating_output == 0 AND air_temperature < target_temperature - 2",
+            "sustained_duration_seconds": 90,
+            "description": "Heating is producing zero output while the zone is more than 2°C below setpoint"
+          },
+          {
+            "name": "Irrigation Offline During Cycle",
+            "expression": "irrigation_pump == true AND irrigation_flow == 0",
+            "sustained_duration_seconds": 60,
+            "description": "Irrigation pump is signaled ON but flow meter reads zero (pump failure or pipe blockage)"
+          }
+        ],
+        "evaluation_interval_seconds": 30
+      },
+      "severity": "critical",
+      "actions": [
+        {
+          "type": "TeamsNotification",
+          "channel": "AgriTech-Alerts",
+          "template": {
+            "title": "🔴 Equipment Failure — {{zone_id}}",
+            "body": "Critical equipment offline in **{{zone_id}}** ({{greenhouse_id}}).\n\n- Heating Output: {{heating_output}}%\n- Irrigation Flow: {{irrigation_flow}} L/min\n- Air Temp: {{air_temperature}}°C (target: {{target_temperature}}°C)\n- Substrate Moisture: {{substrate_moisture}}%\n\nImmediate inspection required.",
+            "priority": "urgent"
+          }
+        },
+        {
+          "type": "Email",
+          "recipients": [
+            "ops-team@agritechanalytics.com",
+            "maintenance@agritechanalytics.com"
+          ],
+          "template": {
+            "subject": "[CRITICAL] Equipment Failure in {{zone_id}} — {{greenhouse_id}}",
+            "body": "Automated alert: Critical equipment is offline in {{zone_id}}.\n\nHeating Output: {{heating_output}}%\nIrrigation Flow: {{irrigation_flow}} L/min\nCurrent Temp: {{air_temperature}}°C\nTarget Temp: {{target_temperature}}°C\nMoisture: {{substrate_moisture}}%\nTimestamp: {{timestamp}}\n\nRefer to the appropriate runbook (HVAC Failure or Irrigation Failure) in the operations manual."
+          }
+        },
+        {
+          "type": "NotebookTrigger",
+          "notebook_name": "anomaly-response-equipment",
+          "workspace": "AgriTech-Analytics",
+          "parameters": {
+            "zone_id": "{{zone_id}}",
+            "greenhouse_id": "{{greenhouse_id}}",
+            "anomaly_type": "equipment-offline",
+            "heating_output": "{{heating_output}}",
+            "irrigation_flow": "{{irrigation_flow}}"
+          },
+          "description": "Triggers equipment failure response: logs incident, queries equipment dependency graph, identifies cascade risks"
+        }
+      ],
+      "cooldown_minutes": 10,
+      "auto_resolve": {
+        "enabled": true,
+        "condition": "(heating_output > 0 OR air_temperature >= target_temperature - 1) AND (irrigation_pump == false OR irrigation_flow > 0)",
+        "message": "✅ Equipment in {{zone_id}} has resumed normal operation."
+      }
+    },
+    {
+      "name": "Nutrient Drift — pH/EC Correlated Deviation",
+      "description": "Fires when both pH and EC deviate from setpoints simultaneously, indicating nutrient solution contamination or dosing pump malfunction. pH deviation > 0.5 AND EC deviation > 0.3 mS/cm sustained for 3+ minutes.",
+      "enabled": true,
+      "source": {
+        "table": "SensorTelemetry",
+        "join_table": "ZoneConfig",
+        "join_key": "zone_id"
+      },
+      "object_id_column": "zone_id",
+      "grouping_columns": ["greenhouse_id", "zone_id"],
+      "measures": [
+        {
+          "expression": "abs(substrate_ph - target_ph)",
+          "alias": "ph_deviation"
+        },
+        {
+          "expression": "abs(substrate_ec - target_ec)",
+          "alias": "ec_deviation"
+        }
+      ],
+      "condition": {
+        "type": "AND",
+        "sub_conditions": [
+          {
+            "measure": "ph_deviation",
+            "operator": "GreaterThan",
+            "threshold": 0.5
+          },
+          {
+            "measure": "ec_deviation",
+            "operator": "GreaterThan",
+            "threshold": 0.3
+          }
+        ],
+        "sustained_duration_seconds": 180,
+        "evaluation_interval_seconds": 30,
+        "description": "Both pH and EC are drifting outside acceptable ranges simultaneously — high-confidence nutrient contamination signal"
+      },
+      "severity": "warning",
+      "actions": [
+        {
+          "type": "TeamsNotification",
+          "channel": "AgriTech-Alerts",
+          "template": {
+            "title": "🟡 Nutrient Drift — {{zone_id}}",
+            "body": "Correlated pH/EC deviation detected in **{{zone_id}}** ({{greenhouse_id}}).\n\n- pH: {{substrate_ph}} (target: {{target_ph}}, deviation: {{ph_deviation}})\n- EC: {{substrate_ec}} mS/cm (target: {{target_ec}}, deviation: {{ec_deviation}})\n- Duration: >3 minutes\n- Crop: {{crop_name}}\n\nCheck dosing pump and nutrient tank.",
+            "priority": "high"
+          }
+        },
+        {
+          "type": "Email",
+          "recipients": [
+            "head-grower@agritechanalytics.com",
+            "nutrient-team@agritechanalytics.com"
+          ],
+          "template": {
+            "subject": "[WARNING] Nutrient Drift in {{zone_id}} — {{greenhouse_id}}",
+            "body": "Automated alert: Correlated pH and EC deviation detected.\n\nZone: {{zone_id}}\nGreenhouse: {{greenhouse_id}}\npH: {{substrate_ph}} (target: {{target_ph}})\nEC: {{substrate_ec}} mS/cm (target: {{target_ec}})\nCrop: {{crop_name}}\nTimestamp: {{timestamp}}\n\nRecommended actions:\n1. Inspect dosing pump for blockages\n2. Test nutrient solution with handheld meter\n3. Consider flushing irrigation lines\n\nRefer to Nutrient Drift runbook."
+          }
+        },
+        {
+          "type": "NotebookTrigger",
+          "notebook_name": "anomaly-response-nutrient",
+          "workspace": "AgriTech-Analytics",
+          "parameters": {
+            "zone_id": "{{zone_id}}",
+            "greenhouse_id": "{{greenhouse_id}}",
+            "anomaly_type": "nutrient-drift",
+            "ph_value": "{{substrate_ph}}",
+            "ec_value": "{{substrate_ec}}"
+          },
+          "description": "Triggers nutrient drift analysis notebook: trend analysis, dosing pump correlation, crop impact assessment"
+        }
+      ],
+      "cooldown_minutes": 20,
+      "auto_resolve": {
+        "enabled": true,
+        "condition": "abs(substrate_ph - target_ph) <= 0.2 AND abs(substrate_ec - target_ec) <= 0.15",
+        "message": "✅ Nutrient levels in {{zone_id}} have returned to target range."
+      }
+    },
+    {
+      "name": "Cold Chain Temperature Exceedance",
+      "description": "Fires when post-harvest product temperature exceeds 5°C during transit or cold storage, indicating refrigeration unit failure or door seal breach. This rule monitors AlertEvents of type 'cold-chain-break' or direct temperature readings from cold chain sensors.",
+      "enabled": true,
+      "source": {
+        "table": "AlertEvents",
+        "filter": "alert_type == 'cold-chain-break'"
+      },
+      "object_id_column": "zone_id",
+      "grouping_columns": ["greenhouse_id"],
+      "condition": {
+        "type": "BECOMES",
+        "operator": "GreaterThan",
+        "measure_expression": "anomaly_score",
+        "threshold": 0.7,
+        "sustained_duration_seconds": 0,
+        "evaluation_interval_seconds": 60,
+        "description": "Triggers immediately when a cold-chain-break alert with anomaly score > 0.7 is ingested — no sustained duration required as this is a food safety event"
+      },
+      "severity": "critical",
+      "actions": [
+        {
+          "type": "TeamsNotification",
+          "channel": "AgriTech-Alerts",
+          "template": {
+            "title": "🔴 COLD CHAIN BREAK — {{greenhouse_id}}",
+            "body": "⚠️ **Food Safety Alert**\n\nCold chain temperature exceedance detected for **{{greenhouse_id}}**.\n\n- Alert ID: {{alert_id}}\n- Severity: {{severity}}\n- Score: {{anomaly_score}}\n- Message: {{message}}\n- Time: {{timestamp}}\n\n**Immediate action required** — product may be compromised. Follow Cold Chain Break runbook.",
+            "priority": "urgent"
+          }
+        },
+        {
+          "type": "Email",
+          "recipients": [
+            "qa-manager@agritechanalytics.com",
+            "ops-team@agritechanalytics.com",
+            "logistics@agritechanalytics.com"
+          ],
+          "template": {
+            "subject": "[FOOD SAFETY] Cold Chain Break — {{greenhouse_id}} — {{timestamp}}",
+            "body": "URGENT: Cold chain temperature exceedance detected.\n\nThis is a food safety event requiring immediate response.\n\nGreenhouse: {{greenhouse_id}}\nAlert ID: {{alert_id}}\nSeverity: {{severity}}\nAnomaly Score: {{anomaly_score}}\nDetails: {{message}}\nTimestamp: {{timestamp}}\n\nImmediate actions:\n1. Check reefer unit operation\n2. Inspect door seals\n3. Move affected product to backup cold storage\n4. Export temperature logger data for QA report\n\nThis incident will be logged automatically for compliance audit."
+          }
+        },
+        {
+          "type": "NotebookTrigger",
+          "notebook_name": "anomaly-response-coldchain",
+          "workspace": "AgriTech-Analytics",
+          "parameters": {
+            "greenhouse_id": "{{greenhouse_id}}",
+            "alert_id": "{{alert_id}}",
+            "anomaly_type": "cold-chain-break",
+            "anomaly_score": "{{anomaly_score}}"
+          },
+          "description": "Triggers cold chain response notebook: logs food safety incident, generates compliance report, queries weather correlation"
+        }
+      ],
+      "cooldown_minutes": 5,
+      "auto_resolve": {
+        "enabled": false,
+        "description": "Cold chain breaks require manual acknowledgment — auto-resolve is disabled for food safety compliance"
+      }
+    }
+  ],
+  "global_settings": {
+    "timezone": "America/Chicago",
+    "default_teams_channel": "AgriTech-Alerts",
+    "max_alerts_per_hour": 50,
+    "deduplication_window_minutes": 5,
+    "notification_throttle": {
+      "enabled": true,
+      "max_per_zone_per_hour": 3,
+      "description": "Prevents alert fatigue by limiting notifications to 3 per zone per hour"
+    },
+    "escalation": {
+      "enabled": true,
+      "escalation_delay_minutes": 30,
+      "escalation_recipients": [
+        "vp-operations@agritechanalytics.com"
+      ],
+      "description": "Unacknowledged critical alerts escalate to VP Operations after 30 minutes"
+    }
+  }
+}

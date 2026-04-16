@@ -1,0 +1,235 @@
+// =====================================================
+// REAL-TIME DASHBOARD TILES — AgriTech Analytics
+// =====================================================
+//
+// KQL queries designed for Fabric Real-Time Dashboard tiles.
+// Each query is a standalone tile data source. Copy into
+// the dashboard tile query editor and configure the
+// visualization type as noted in the comment.
+//
+// Tables referenced:
+//   SensorTelemetry, EquipmentState, WeatherData,
+//   AlertEvents, ZoneConfig
+// Materialized views:
+//   ZoneLatestReading, EquipmentLatestState
+// =====================================================
+
+
+// =====================================================
+// TILE 1: ZONE HEATMAP
+// Visualization: Table / Heatmap (color by deviation)
+// =====================================================
+// Shows each zone's deviation from its crop setpoint.
+// Color-code: green (within ±1°C), yellow (±1–3°C), red (>3°C).
+// Use conditional formatting on the deviation column.
+
+ZoneLatestReading
+| join kind=inner ZoneConfig on zone_id
+| extend temp_deviation = air_temperature - target_temperature
+| extend deviation_status = case(
+    abs(temp_deviation) <= 1, "🟢 On Target",
+    abs(temp_deviation) <= 3, "🟡 Warning",
+    "🔴 Critical"
+)
+| project 
+    zone_id,
+    greenhouse_id = ZoneLatestReading.greenhouse_id,
+    crop_name,
+    air_temperature = round(air_temperature, 1),
+    target_temperature,
+    deviation = round(temp_deviation, 1),
+    deviation_status,
+    humidity = round(air_humidity, 0),
+    co2 = round(co2_level, 0),
+    ph = round(substrate_ph, 1),
+    last_update = timestamp
+| order by greenhouse_id asc, zone_id asc
+
+
+// =====================================================
+// TILE 2: CURRENT SENSOR VALUES — SELECTED ZONE
+// Visualization: Stat / Gauge cards
+// =====================================================
+// Returns the latest sensor readings for a single zone.
+// Use a dashboard parameter "selected_zone" to filter.
+// Each value maps to a gauge card with min/max/target ranges.
+
+let selected_zone = "BH-Z01";  // replace with dashboard parameter
+ZoneLatestReading
+| where zone_id == selected_zone
+| join kind=inner ZoneConfig on zone_id
+| project 
+    zone_id,
+    crop_name,
+    // Temperature gauge (°C)
+    temperature = round(air_temperature, 1),
+    temp_target = target_temperature,
+    temp_status = iff(abs(air_temperature - target_temperature) <= 2, "OK", "ALERT"),
+    // Humidity gauge (%)
+    humidity = round(air_humidity, 0),
+    humidity_target = target_humidity,
+    // CO₂ gauge (ppm)
+    co2 = round(co2_level, 0),
+    co2_target = target_co2,
+    // pH gauge
+    ph = round(substrate_ph, 2),
+    ph_target = target_ph,
+    // EC gauge (mS/cm)
+    ec = round(substrate_ec, 2),
+    ec_target = target_ec,
+    // Additional sensors
+    par_light = round(par_light, 0),
+    vpd = round(vpd, 2),
+    substrate_moisture = round(substrate_moisture, 1),
+    water_flow = round(water_flow_rate, 1),
+    last_reading = timestamp
+
+
+// =====================================================
+// TILE 3: TEMPERATURE TIME-SERIES — ALL ZONES
+// Visualization: Line chart (time x-axis, one line per zone)
+// =====================================================
+// Shows air temperature trends for all 16 zones over the
+// last 4 hours at 5-minute granularity. Each zone_id is a
+// separate series. Filter by greenhouse_id in the dashboard.
+
+SensorTelemetry
+| where timestamp > ago(4h)
+| summarize avg_temp = avg(air_temperature) by zone_id, greenhouse_id, bin(timestamp, 5m)
+| order by timestamp asc, zone_id asc
+
+
+// =====================================================
+// TILE 4: EQUIPMENT STATUS SUMMARY
+// Visualization: Table with conditional formatting
+// =====================================================
+// Current state of all equipment per zone. Shows heating,
+// cooling, irrigation, lighting, and CO₂ injection status.
+// Use color formatting: green = active/normal, red = offline.
+
+EquipmentLatestState
+| join kind=inner ZoneConfig on zone_id
+| extend 
+    heating_status = iff(heating_output > 0, "🟢 Active", "⚫ Off"),
+    cooling_status = iff(cooling_output > 0, "🔵 Active", "⚫ Off"),
+    irrigation_status = case(
+        irrigation_pump == true and irrigation_flow > 0, "🟢 Flowing",
+        irrigation_pump == true and irrigation_flow == 0, "🔴 Pump ON / No Flow",
+        "⚫ Off"
+    ),
+    lighting_status = iff(supplemental_light == true, 
+        strcat("🟡 ", tostring(round(supplemental_light_watts, 0)), "W"), "⚫ Off"),
+    co2_status = iff(co2_injection_rate > 0, 
+        strcat("🟢 ", tostring(round(co2_injection_rate, 1)), " g/hr"), "⚫ Off"),
+    vent_status = strcat(tostring(round(vent_position, 0)), "% open"),
+    curtain_status = strcat(tostring(round(thermal_curtain, 0)), "% closed")
+| project 
+    zone_id, greenhouse_id = EquipmentLatestState.greenhouse_id, crop_name,
+    heating_status, cooling_status, irrigation_status,
+    lighting_status, co2_status, vent_status, curtain_status,
+    last_update = timestamp
+| order by greenhouse_id asc, zone_id asc
+
+
+// =====================================================
+// TILE 5: ALERT TICKER — LAST 20 ALERTS
+// Visualization: Table (scrolling ticker / list)
+// =====================================================
+// Most recent 20 alerts across all greenhouses. Color-code
+// severity column: red = critical, orange = warning, blue = info.
+
+AlertEvents
+| order by timestamp desc
+| take 20
+| extend time_ago = datetime_diff('minute', now(), timestamp)
+| project 
+    timestamp,
+    time_ago_min = time_ago,
+    severity,
+    alert_type,
+    zone_id,
+    greenhouse_id,
+    message,
+    anomaly_score = round(anomaly_score, 2),
+    acknowledged = iff(acknowledged, "✅", "❌")
+
+
+// =====================================================
+// TILE 6: WEATHER OVERLAY — OUTDOOR vs INDOOR TEMP
+// Visualization: Dual-axis line chart
+// =====================================================
+// Compares outdoor temperature (WeatherData) against average
+// indoor temperature (SensorTelemetry) per greenhouse. Helps
+// operators see how external conditions correlate with HVAC load.
+
+let lookback = 8h;
+let indoor = SensorTelemetry
+    | where timestamp > ago(lookback)
+    | summarize indoor_avg_temp = avg(air_temperature) 
+        by greenhouse_id, bin(timestamp, 15m);
+let outdoor = WeatherData
+    | where timestamp > ago(lookback)
+    | project greenhouse_id, timestamp = bin(timestamp, 15m), 
+        outdoor_temp = outside_temperature, 
+        solar_radiation, wind_speed;
+indoor
+| join kind=inner outdoor on greenhouse_id, timestamp
+| project timestamp, greenhouse_id, 
+    indoor_avg_temp = round(indoor_avg_temp, 1),
+    outdoor_temp = round(outdoor_temp, 1),
+    temp_delta = round(indoor_avg_temp - outdoor_temp, 1),
+    solar_radiation = round(solar_radiation, 0),
+    wind_speed = round(wind_speed, 1)
+| order by timestamp asc
+
+
+// =====================================================
+// TILE 7: CO₂ LEVELS ACROSS ZONES — BAR CHART
+// Visualization: Bar chart (zone_id on x-axis, CO₂ on y-axis)
+// =====================================================
+// Current CO₂ levels per zone compared to the crop target.
+// Use stacked bars or reference lines to show target vs actual.
+// Zones below target may need more CO₂ injection; zones above
+// indicate ventilation issues or injection overrun.
+
+ZoneLatestReading
+| join kind=inner ZoneConfig on zone_id
+| project 
+    zone_id,
+    greenhouse_id = ZoneLatestReading.greenhouse_id,
+    crop_name,
+    co2_actual = round(co2_level, 0),
+    co2_target = target_co2,
+    co2_deviation = round(co2_level - target_co2, 0),
+    co2_status = case(
+        abs(co2_level - target_co2) <= 50, "On Target",
+        co2_level < target_co2, "Below Target",
+        "Above Target"
+    )
+| order by greenhouse_id asc, zone_id asc
+
+
+// =====================================================
+// TILE 8: VPD TREND — LINE CHART WITH OPTIMAL BANDS
+// Visualization: Line chart with reference band (0.8–1.2 kPa)
+// =====================================================
+// Vapor Pressure Deficit over the last 6 hours per zone.
+// Optimal VPD range: 0.8–1.2 kPa (leafy greens) or
+// 0.8–1.4 kPa (vine crops). Add horizontal reference lines
+// at 0.8 and 1.2 in the dashboard configuration.
+// VPD below 0.8 → fungal risk; above 1.4 → wilt risk.
+
+SensorTelemetry
+| where timestamp > ago(6h)
+| summarize avg_vpd = avg(vpd) by zone_id, greenhouse_id, bin(timestamp, 10m)
+| extend 
+    optimal_low = 0.8,
+    optimal_high = 1.2,
+    vpd_status = case(
+        avg_vpd < 0.8, "Low — Fungal Risk",
+        avg_vpd > 1.2, "High — Wilt Risk",
+        "Optimal"
+    )
+| project timestamp, zone_id, greenhouse_id, 
+    avg_vpd = round(avg_vpd, 2), optimal_low, optimal_high, vpd_status
+| order by timestamp asc, zone_id asc

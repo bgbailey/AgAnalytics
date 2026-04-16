@@ -1,0 +1,225 @@
+// =====================================================
+// ANOMALY DETECTION QUERIES — AgriTech Analytics
+// =====================================================
+//
+// KQL queries for anomaly detection and operational insights.
+// Designed for use in a Fabric KQL Queryset or as Real-Time
+// Dashboard tile data sources.
+//
+// Tables referenced:
+//   SensorTelemetry, EquipmentState, ZoneConfig,
+//   ZoneHourlySummary (materialized view)
+//
+// Each query is a standalone block — paste into a KQL Queryset
+// tab or embed in a dashboard tile.
+// =====================================================
+
+
+// =====================================================
+// 1. TEMPERATURE ANOMALY DETECTION
+//    (series_decompose_anomalies)
+// =====================================================
+// Detects unusual temperature patterns per zone over the
+// last 24 hours. Uses time-series decomposition to separate
+// trend, seasonal, and residual components — anomalies are
+// residual spikes that exceed 1.5× the standard deviation.
+// Great for catching HVAC failures, stuck valves, or sensor drift.
+
+let lookback = 24h;
+SensorTelemetry
+| where timestamp > ago(lookback)
+| make-series avg_temp = avg(air_temperature) on timestamp step 5m by zone_id, greenhouse_id
+| extend (anomalies, score, baseline) = series_decompose_anomalies(avg_temp, 1.5)
+| mv-expand timestamp to typeof(datetime), avg_temp to typeof(real), 
+    anomalies to typeof(int), score to typeof(real), baseline to typeof(real)
+| where anomalies != 0
+| project timestamp, zone_id, greenhouse_id, avg_temp, baseline, 
+    anomaly_direction = iff(anomalies > 0, "spike", "dip"), score
+| order by abs(score) desc
+
+
+// =====================================================
+// 2. MULTI-SENSOR CORRELATION ANOMALY
+//    (Nutrient Contamination Signature)
+// =====================================================
+// Detects when pH and EC deviate together — a hallmark of
+// nutrient solution contamination or dosing pump malfunction.
+// When both drift simultaneously it almost never happens by
+// chance, so this is a high-confidence alert.
+
+let lookback = 6h;
+SensorTelemetry
+| where timestamp > ago(lookback)
+| summarize avg_ph = avg(substrate_ph), avg_ec = avg(substrate_ec) 
+    by zone_id, greenhouse_id, bin(timestamp, 10m)
+| join kind=inner ZoneConfig on zone_id
+| extend ph_deviation = avg_ph - target_ph, ec_deviation = avg_ec - target_ec
+| where abs(ph_deviation) > 0.5 and abs(ec_deviation) > 0.3
+| project timestamp, zone_id, greenhouse_id, avg_ph, target_ph, ph_deviation, 
+    avg_ec, target_ec, ec_deviation
+| order by timestamp desc
+
+
+// =====================================================
+// 3. ZONE HEALTH SCORE
+//    (Composite 0–100 score per zone)
+// =====================================================
+// Calculates a composite health score for each zone based on
+// how far each sensor channel deviates from its crop setpoint.
+// Scores are weighted so temperature and pH deviations penalize
+// more heavily than CO₂ or humidity. The 15-minute window
+// smooths out transient noise.
+
+SensorTelemetry
+| where timestamp > ago(15m)
+| summarize 
+    avg_temp = avg(air_temperature),
+    avg_humidity = avg(air_humidity),
+    avg_co2 = avg(co2_level),
+    avg_ph = avg(substrate_ph),
+    avg_ec = avg(substrate_ec)
+    by zone_id, greenhouse_id
+| join kind=inner ZoneConfig on zone_id
+| extend 
+    temp_score = max_of(0, 100 - abs(avg_temp - target_temperature) * 20),
+    humidity_score = max_of(0, 100 - abs(avg_humidity - target_humidity) * 5),
+    co2_score = max_of(0, 100 - abs(avg_co2 - target_co2) * 0.2),
+    ph_score = max_of(0, 100 - abs(avg_ph - target_ph) * 100),
+    ec_score = max_of(0, 100 - abs(avg_ec - target_ec) * 50)
+| extend health_score = (temp_score + humidity_score + co2_score + ph_score + ec_score) / 5
+| extend status = case(health_score >= 85, "Healthy", health_score >= 60, "Warning", "Critical")
+| project zone_id, greenhouse_id, crop_name, health_score, status,
+    temp_score, humidity_score, co2_score, ph_score, ec_score
+| order by health_score asc
+
+
+// =====================================================
+// 4. EQUIPMENT ANOMALY — FLATLINE / ZERO DETECTION
+//    (Heating offline while zone is cold)
+// =====================================================
+// Cross-references EquipmentState with SensorTelemetry to find
+// zones where heating output is zero but air temperature is
+// more than 2°C below setpoint. This is the primary detection
+// pattern for the "hvac-failure" demo scenario.
+
+SensorTelemetry
+| where timestamp > ago(30m)
+| join kind=inner (
+    EquipmentState
+    | where timestamp > ago(30m)
+    | summarize arg_max(timestamp, *) by zone_id
+) on zone_id
+| join kind=inner ZoneConfig on zone_id
+| where air_temperature < target_temperature - 2 and heating_output == 0
+| project timestamp, zone_id, greenhouse_id, air_temperature, target_temperature, 
+    heating_output, alert = "HEATING_OFFLINE_WHILE_COLD"
+
+
+// =====================================================
+// 5. IRRIGATION FAILURE DETECTION
+//    (Zero flow + dropping moisture)
+// =====================================================
+// Uses series_fir (finite impulse response filter) to compute
+// a 3-point moving slope on substrate moisture. If moisture is
+// trending down more than 2% per 5-min window AND irrigation
+// flow is zero, we flag it as a suspected pump failure.
+// This powers the "irrigation-failure" demo scenario.
+
+SensorTelemetry
+| where timestamp > ago(1h)
+| make-series moisture = avg(substrate_moisture) on timestamp step 5m by zone_id
+| extend moisture_trend = series_fir(moisture, repeat(1, 3), false)
+| mv-expand timestamp to typeof(datetime), moisture to typeof(real), 
+    moisture_trend to typeof(real)
+| where moisture_trend < -2  // dropping > 2% per 5-min window
+| join kind=inner (
+    EquipmentState | where timestamp > ago(1h) and irrigation_flow == 0
+    | distinct zone_id
+) on zone_id
+| project timestamp, zone_id, moisture, moisture_trend, alert = "IRRIGATION_FAILURE_SUSPECTED"
+
+
+// =====================================================
+// 6. VPD ANOMALY (Vapor Pressure Deficit out of range)
+// =====================================================
+// VPD is critical for transpiration and nutrient uptake.
+// Optimal range is 0.8–1.2 kPa for most greenhouse crops.
+// Sustained VPD outside this range causes stress: too low
+// means fungal risk, too high means wilting.
+
+let vpd_low = 0.8;
+let vpd_high = 1.2;
+SensorTelemetry
+| where timestamp > ago(2h)
+| summarize avg_vpd = avg(vpd), min_vpd = min(vpd), max_vpd = max(vpd)
+    by zone_id, greenhouse_id, bin(timestamp, 10m)
+| where avg_vpd < vpd_low or avg_vpd > vpd_high
+| extend vpd_status = case(avg_vpd < vpd_low, "TOO_LOW_FUNGAL_RISK", "TOO_HIGH_WILT_RISK")
+| project timestamp, zone_id, greenhouse_id, avg_vpd, min_vpd, max_vpd, vpd_status
+| order by timestamp desc
+
+
+// =====================================================
+// 7. YEAR-OVER-YEAR COMPARISON
+//    (Uses ZoneHourlySummary materialized view)
+// =====================================================
+// Compares average temperature and reading volume for the
+// last 7 days against the same 7-day window one year ago.
+// Useful for the executive dashboard "YoY Trends" tile.
+
+let current_start = startofday(ago(7d));
+let current_end = now();
+let prior_start = datetime_add('year', -1, current_start);
+let prior_end = datetime_add('year', -1, current_end);
+let current = ZoneHourlySummary
+    | where timestamp between (current_start .. current_end)
+    | summarize current_avg_temp = avg(avg_temp), current_readings = sum(reading_count) 
+        by greenhouse_id, dayofweek(timestamp);
+let prior = ZoneHourlySummary
+    | where timestamp between (prior_start .. prior_end)
+    | summarize prior_avg_temp = avg(avg_temp), prior_readings = sum(reading_count)
+        by greenhouse_id, dayofweek(timestamp);
+current | join kind=inner prior on greenhouse_id, Column1
+| extend temp_change = current_avg_temp - prior_avg_temp
+| project greenhouse_id, day_of_week = Column1, 
+    current_avg_temp, prior_avg_temp, temp_change
+
+
+// =====================================================
+// 8. COLD CHAIN BREAK DETECTION
+//    (Post-harvest temperature exceedance)
+// =====================================================
+// Monitors AlertEvents for cold-chain-break alerts and
+// cross-references with the latest weather data to see if
+// outdoor heat is a contributing factor. Used during the
+// "cold-chain-break" demo scenario.
+
+AlertEvents
+| where timestamp > ago(24h) and alert_type == "cold-chain-break"
+| join kind=leftouter (
+    WeatherData
+    | where timestamp > ago(24h)
+    | summarize avg_outside_temp = avg(outside_temperature) by greenhouse_id, bin(timestamp, 30m)
+) on greenhouse_id, $left.timestamp == $right.timestamp
+| project timestamp, alert_id, greenhouse_id, zone_id, severity, message, 
+    anomaly_score, avg_outside_temp
+| order by timestamp desc
+
+
+// =====================================================
+// 9. ALERT SUMMARY — LAST 24 HOURS
+// =====================================================
+// Aggregate alert counts by type and severity for operational
+// awareness. Powers the "Incidents Today" KPI card.
+
+AlertEvents
+| where timestamp > ago(24h)
+| summarize 
+    total_alerts = count(),
+    critical_count = countif(severity == "critical"),
+    warning_count = countif(severity == "warning"),
+    info_count = countif(severity == "info"),
+    acknowledged_count = countif(acknowledged == true)
+    by greenhouse_id, alert_type
+| extend unacknowledged = total_alerts - acknowledged_count
+| order by critical_count desc, total_alerts desc

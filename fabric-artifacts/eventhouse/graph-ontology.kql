@@ -1,0 +1,892 @@
+// =============================================================================
+// GREENHOUSE DIGITAL TWIN — KQL Graph Model & Seed Data
+// =============================================================================
+//
+// AgriTech Analytics — KQL Graph Semantics for equipment dependency,
+// blast-radius analysis, and runbook automation.
+//
+// This script creates:
+//   1. Node tables (Greenhouse, Zone, Sensor, Crop, Equipment, RunbookAction, AnomalyType)
+//   2. Edge tables (contains, grows, has_sensor, controlled_by, adjacent_to,
+//      depends_on, resolves_with, triggers)
+//   3. Graph model definition (GreenhouseDigitalTwin)
+//   4. Seed data for both greenhouses (BrightHarvest + Mucci Valley)
+//   5. Demo graph queries (blast radius, runbook lookup, dependency chain)
+//
+// Execute each .create / .ingest block one at a time in Fabric Eventhouse.
+// =============================================================================
+
+
+// =============================================================================
+// SECTION 1 — NODE TABLES
+// =============================================================================
+
+// --- 1a. Greenhouse nodes ---
+.create-merge table GraphNode_Greenhouse (
+    node_id: string,
+    name: string,
+    location: string,
+    country: string,
+    zone_count: int,
+    size_sqft: int
+)
+
+// --- 1b. Zone nodes ---
+.create-merge table GraphNode_Zone (
+    node_id: string,
+    zone_id: string,
+    greenhouse_id: string,
+    zone_name: string,
+    crop_id: string,
+    crop_name: string,
+    size_sqft: int,
+    target_temperature: real,
+    target_humidity: real,
+    target_co2: real,
+    target_ph: real,
+    target_ec: real
+)
+
+// --- 1c. Sensor nodes ---
+.create-merge table GraphNode_Sensor (
+    node_id: string,
+    sensor_id: string,
+    zone_id: string,
+    sensor_type: string,
+    unit: string
+)
+
+// --- 1d. Crop nodes ---
+.create-merge table GraphNode_Crop (
+    node_id: string,
+    crop_id: string,
+    crop_name: string,
+    category: string,
+    optimal_temp_low: real,
+    optimal_temp_high: real,
+    days_to_harvest: int
+)
+
+// --- 1e. Equipment nodes ---
+.create-merge table GraphNode_Equipment (
+    node_id: string,
+    equipment_id: string,
+    zone_id: string,
+    equipment_type: string,
+    equipment_name: string,
+    is_critical: bool
+)
+
+// --- 1f. RunbookAction nodes ---
+.create-merge table GraphNode_RunbookAction (
+    node_id: string,
+    action_id: string,
+    anomaly_type: string,
+    step_order: int,
+    action_name: string,
+    description: string,
+    automated: bool,
+    sla_minutes: int
+)
+
+// --- 1g. AnomalyType nodes ---
+.create-merge table GraphNode_AnomalyType (
+    node_id: string,
+    anomaly_type: string,
+    display_name: string,
+    severity: string,
+    description: string
+)
+
+
+// =============================================================================
+// SECTION 2 — EDGE TABLES
+// =============================================================================
+
+// --- 2a. contains: Greenhouse → Zone ---
+.create-merge table GraphEdge_Contains (
+    source_id: string,
+    target_id: string,
+    relationship: string
+)
+
+// --- 2b. grows: Zone → Crop ---
+.create-merge table GraphEdge_Grows (
+    source_id: string,
+    target_id: string,
+    relationship: string
+)
+
+// --- 2c. has_sensor: Zone → Sensor ---
+.create-merge table GraphEdge_HasSensor (
+    source_id: string,
+    target_id: string,
+    relationship: string
+)
+
+// --- 2d. controlled_by: Zone → Equipment ---
+.create-merge table GraphEdge_ControlledBy (
+    source_id: string,
+    target_id: string,
+    relationship: string
+)
+
+// --- 2e. adjacent_to: Zone ↔ Zone ---
+.create-merge table GraphEdge_AdjacentTo (
+    source_id: string,
+    target_id: string,
+    relationship: string
+)
+
+// --- 2f. depends_on: Equipment → Equipment ---
+.create-merge table GraphEdge_DependsOn (
+    source_id: string,
+    target_id: string,
+    relationship: string,
+    dependency_type: string
+)
+
+// --- 2g. resolves_with: AnomalyType → RunbookAction ---
+.create-merge table GraphEdge_ResolvesWith (
+    source_id: string,
+    target_id: string,
+    relationship: string
+)
+
+// --- 2h. triggers: AnomalyType → Zone (which anomaly types affect which zones) ---
+.create-merge table GraphEdge_Triggers (
+    source_id: string,
+    target_id: string,
+    relationship: string
+)
+
+
+// =============================================================================
+// SECTION 3 — SEED NODE DATA
+// =============================================================================
+
+// --- 3a. Greenhouses (2) ---
+.ingest inline into table GraphNode_Greenhouse <|
+greenhouse:brightharvest,BrightHarvest Greens,"Rochelle, IL",USA,8,200000
+greenhouse:mucci-valley,Mucci Valley Farms,"Kingsville, ON",Canada,8,250000
+
+// --- 3b. Zones (16) ---
+.ingest inline into table GraphNode_Zone <|
+zone:BH-Z01,BH-Z01,brightharvest,Zone 1,baby_spinach,Baby Spinach,25000,18.0,70.0,800,6.0,1.8
+zone:BH-Z02,BH-Z02,brightharvest,Zone 2,baby_spinach,Baby Spinach,25000,18.0,70.0,800,6.0,1.8
+zone:BH-Z03,BH-Z03,brightharvest,Zone 3,romaine,Romaine Lettuce,25000,20.0,65.0,900,6.2,2.0
+zone:BH-Z04,BH-Z04,brightharvest,Zone 4,romaine,Romaine Lettuce,25000,20.0,65.0,900,6.2,2.0
+zone:BH-Z05,BH-Z05,brightharvest,Zone 5,arugula,Arugula,25000,19.0,68.0,850,6.0,1.6
+zone:BH-Z06,BH-Z06,brightharvest,Zone 6,arugula,Arugula,25000,19.0,68.0,850,6.0,1.6
+zone:BH-Z07,BH-Z07,brightharvest,Zone 7,basil,Basil,25000,24.0,60.0,1000,5.8,1.4
+zone:BH-Z08,BH-Z08,brightharvest,Zone 8,basil,Basil,25000,24.0,60.0,1000,5.8,1.4
+zone:MV-Z01,MV-Z01,mucci-valley,Zone 1,cocktail_tomato,Cocktail Tomato,31250,23.0,70.0,1000,5.8,2.8
+zone:MV-Z02,MV-Z02,mucci-valley,Zone 2,cocktail_tomato,Cocktail Tomato,31250,23.0,70.0,1000,5.8,2.8
+zone:MV-Z03,MV-Z03,mucci-valley,Zone 3,bell_pepper,Bell Pepper,31250,22.0,65.0,900,6.0,2.5
+zone:MV-Z04,MV-Z04,mucci-valley,Zone 4,bell_pepper,Bell Pepper,31250,22.0,65.0,900,6.0,2.5
+zone:MV-Z05,MV-Z05,mucci-valley,Zone 5,mini_cucumber,Mini Cucumber,31250,24.0,75.0,900,5.8,2.2
+zone:MV-Z06,MV-Z06,mucci-valley,Zone 6,mini_cucumber,Mini Cucumber,31250,24.0,75.0,900,5.8,2.2
+zone:MV-Z07,MV-Z07,mucci-valley,Zone 7,strawberry,Strawberry,31250,20.0,65.0,800,5.8,1.4
+zone:MV-Z08,MV-Z08,mucci-valley,Zone 8,strawberry,Strawberry,31250,20.0,65.0,800,5.8,1.4
+
+// --- 3c. Crops (8) ---
+.ingest inline into table GraphNode_Crop <|
+crop:baby_spinach,baby_spinach,Baby Spinach,leafy_green,16.0,20.0,28
+crop:romaine,romaine,Romaine Lettuce,leafy_green,18.0,22.0,35
+crop:arugula,arugula,Arugula,leafy_green,17.0,21.0,25
+crop:basil,basil,Basil,herb,22.0,26.0,30
+crop:cocktail_tomato,cocktail_tomato,Cocktail Tomato,vine_crop,21.0,25.0,75
+crop:bell_pepper,bell_pepper,Bell Pepper,vine_crop,20.0,24.0,80
+crop:mini_cucumber,mini_cucumber,Mini Cucumber,vine_crop,22.0,26.0,55
+crop:strawberry,strawberry,Strawberry,berry,18.0,22.0,60
+
+// --- 3d. Sensors (160 — 10 per zone) ---
+// BrightHarvest Greens sensors
+.ingest inline into table GraphNode_Sensor <|
+sensor:BH-Z01-temp,BH-Z01-temp,BH-Z01,air_temperature,°C
+sensor:BH-Z01-hum,BH-Z01-hum,BH-Z01,air_humidity,%
+sensor:BH-Z01-co2,BH-Z01-co2,BH-Z01,co2_level,ppm
+sensor:BH-Z01-par,BH-Z01-par,BH-Z01,par_light,µmol/m²/s
+sensor:BH-Z01-stemp,BH-Z01-stemp,BH-Z01,substrate_temperature,°C
+sensor:BH-Z01-smoist,BH-Z01-smoist,BH-Z01,substrate_moisture,%
+sensor:BH-Z01-ec,BH-Z01-ec,BH-Z01,substrate_ec,mS/cm
+sensor:BH-Z01-ph,BH-Z01-ph,BH-Z01,substrate_ph,pH
+sensor:BH-Z01-flow,BH-Z01-flow,BH-Z01,water_flow_rate,L/min
+sensor:BH-Z01-vpd,BH-Z01-vpd,BH-Z01,vpd,kPa
+sensor:BH-Z02-temp,BH-Z02-temp,BH-Z02,air_temperature,°C
+sensor:BH-Z02-hum,BH-Z02-hum,BH-Z02,air_humidity,%
+sensor:BH-Z02-co2,BH-Z02-co2,BH-Z02,co2_level,ppm
+sensor:BH-Z02-par,BH-Z02-par,BH-Z02,par_light,µmol/m²/s
+sensor:BH-Z02-stemp,BH-Z02-stemp,BH-Z02,substrate_temperature,°C
+sensor:BH-Z02-smoist,BH-Z02-smoist,BH-Z02,substrate_moisture,%
+sensor:BH-Z02-ec,BH-Z02-ec,BH-Z02,substrate_ec,mS/cm
+sensor:BH-Z02-ph,BH-Z02-ph,BH-Z02,substrate_ph,pH
+sensor:BH-Z02-flow,BH-Z02-flow,BH-Z02,water_flow_rate,L/min
+sensor:BH-Z02-vpd,BH-Z02-vpd,BH-Z02,vpd,kPa
+sensor:BH-Z03-temp,BH-Z03-temp,BH-Z03,air_temperature,°C
+sensor:BH-Z03-hum,BH-Z03-hum,BH-Z03,air_humidity,%
+sensor:BH-Z03-co2,BH-Z03-co2,BH-Z03,co2_level,ppm
+sensor:BH-Z03-par,BH-Z03-par,BH-Z03,par_light,µmol/m²/s
+sensor:BH-Z03-stemp,BH-Z03-stemp,BH-Z03,substrate_temperature,°C
+sensor:BH-Z03-smoist,BH-Z03-smoist,BH-Z03,substrate_moisture,%
+sensor:BH-Z03-ec,BH-Z03-ec,BH-Z03,substrate_ec,mS/cm
+sensor:BH-Z03-ph,BH-Z03-ph,BH-Z03,substrate_ph,pH
+sensor:BH-Z03-flow,BH-Z03-flow,BH-Z03,water_flow_rate,L/min
+sensor:BH-Z03-vpd,BH-Z03-vpd,BH-Z03,vpd,kPa
+sensor:BH-Z04-temp,BH-Z04-temp,BH-Z04,air_temperature,°C
+sensor:BH-Z04-hum,BH-Z04-hum,BH-Z04,air_humidity,%
+sensor:BH-Z04-co2,BH-Z04-co2,BH-Z04,co2_level,ppm
+sensor:BH-Z04-par,BH-Z04-par,BH-Z04,par_light,µmol/m²/s
+sensor:BH-Z04-stemp,BH-Z04-stemp,BH-Z04,substrate_temperature,°C
+sensor:BH-Z04-smoist,BH-Z04-smoist,BH-Z04,substrate_moisture,%
+sensor:BH-Z04-ec,BH-Z04-ec,BH-Z04,substrate_ec,mS/cm
+sensor:BH-Z04-ph,BH-Z04-ph,BH-Z04,substrate_ph,pH
+sensor:BH-Z04-flow,BH-Z04-flow,BH-Z04,water_flow_rate,L/min
+sensor:BH-Z04-vpd,BH-Z04-vpd,BH-Z04,vpd,kPa
+sensor:BH-Z05-temp,BH-Z05-temp,BH-Z05,air_temperature,°C
+sensor:BH-Z05-hum,BH-Z05-hum,BH-Z05,air_humidity,%
+sensor:BH-Z05-co2,BH-Z05-co2,BH-Z05,co2_level,ppm
+sensor:BH-Z05-par,BH-Z05-par,BH-Z05,par_light,µmol/m²/s
+sensor:BH-Z05-stemp,BH-Z05-stemp,BH-Z05,substrate_temperature,°C
+sensor:BH-Z05-smoist,BH-Z05-smoist,BH-Z05,substrate_moisture,%
+sensor:BH-Z05-ec,BH-Z05-ec,BH-Z05,substrate_ec,mS/cm
+sensor:BH-Z05-ph,BH-Z05-ph,BH-Z05,substrate_ph,pH
+sensor:BH-Z05-flow,BH-Z05-flow,BH-Z05,water_flow_rate,L/min
+sensor:BH-Z05-vpd,BH-Z05-vpd,BH-Z05,vpd,kPa
+sensor:BH-Z06-temp,BH-Z06-temp,BH-Z06,air_temperature,°C
+sensor:BH-Z06-hum,BH-Z06-hum,BH-Z06,air_humidity,%
+sensor:BH-Z06-co2,BH-Z06-co2,BH-Z06,co2_level,ppm
+sensor:BH-Z06-par,BH-Z06-par,BH-Z06,par_light,µmol/m²/s
+sensor:BH-Z06-stemp,BH-Z06-stemp,BH-Z06,substrate_temperature,°C
+sensor:BH-Z06-smoist,BH-Z06-smoist,BH-Z06,substrate_moisture,%
+sensor:BH-Z06-ec,BH-Z06-ec,BH-Z06,substrate_ec,mS/cm
+sensor:BH-Z06-ph,BH-Z06-ph,BH-Z06,substrate_ph,pH
+sensor:BH-Z06-flow,BH-Z06-flow,BH-Z06,water_flow_rate,L/min
+sensor:BH-Z06-vpd,BH-Z06-vpd,BH-Z06,vpd,kPa
+sensor:BH-Z07-temp,BH-Z07-temp,BH-Z07,air_temperature,°C
+sensor:BH-Z07-hum,BH-Z07-hum,BH-Z07,air_humidity,%
+sensor:BH-Z07-co2,BH-Z07-co2,BH-Z07,co2_level,ppm
+sensor:BH-Z07-par,BH-Z07-par,BH-Z07,par_light,µmol/m²/s
+sensor:BH-Z07-stemp,BH-Z07-stemp,BH-Z07,substrate_temperature,°C
+sensor:BH-Z07-smoist,BH-Z07-smoist,BH-Z07,substrate_moisture,%
+sensor:BH-Z07-ec,BH-Z07-ec,BH-Z07,substrate_ec,mS/cm
+sensor:BH-Z07-ph,BH-Z07-ph,BH-Z07,substrate_ph,pH
+sensor:BH-Z07-flow,BH-Z07-flow,BH-Z07,water_flow_rate,L/min
+sensor:BH-Z07-vpd,BH-Z07-vpd,BH-Z07,vpd,kPa
+sensor:BH-Z08-temp,BH-Z08-temp,BH-Z08,air_temperature,°C
+sensor:BH-Z08-hum,BH-Z08-hum,BH-Z08,air_humidity,%
+sensor:BH-Z08-co2,BH-Z08-co2,BH-Z08,co2_level,ppm
+sensor:BH-Z08-par,BH-Z08-par,BH-Z08,par_light,µmol/m²/s
+sensor:BH-Z08-stemp,BH-Z08-stemp,BH-Z08,substrate_temperature,°C
+sensor:BH-Z08-smoist,BH-Z08-smoist,BH-Z08,substrate_moisture,%
+sensor:BH-Z08-ec,BH-Z08-ec,BH-Z08,substrate_ec,mS/cm
+sensor:BH-Z08-ph,BH-Z08-ph,BH-Z08,substrate_ph,pH
+sensor:BH-Z08-flow,BH-Z08-flow,BH-Z08,water_flow_rate,L/min
+sensor:BH-Z08-vpd,BH-Z08-vpd,BH-Z08,vpd,kPa
+
+// Mucci Valley Farms sensors
+.ingest inline into table GraphNode_Sensor <|
+sensor:MV-Z01-temp,MV-Z01-temp,MV-Z01,air_temperature,°C
+sensor:MV-Z01-hum,MV-Z01-hum,MV-Z01,air_humidity,%
+sensor:MV-Z01-co2,MV-Z01-co2,MV-Z01,co2_level,ppm
+sensor:MV-Z01-par,MV-Z01-par,MV-Z01,par_light,µmol/m²/s
+sensor:MV-Z01-stemp,MV-Z01-stemp,MV-Z01,substrate_temperature,°C
+sensor:MV-Z01-smoist,MV-Z01-smoist,MV-Z01,substrate_moisture,%
+sensor:MV-Z01-ec,MV-Z01-ec,MV-Z01,substrate_ec,mS/cm
+sensor:MV-Z01-ph,MV-Z01-ph,MV-Z01,substrate_ph,pH
+sensor:MV-Z01-flow,MV-Z01-flow,MV-Z01,water_flow_rate,L/min
+sensor:MV-Z01-vpd,MV-Z01-vpd,MV-Z01,vpd,kPa
+sensor:MV-Z02-temp,MV-Z02-temp,MV-Z02,air_temperature,°C
+sensor:MV-Z02-hum,MV-Z02-hum,MV-Z02,air_humidity,%
+sensor:MV-Z02-co2,MV-Z02-co2,MV-Z02,co2_level,ppm
+sensor:MV-Z02-par,MV-Z02-par,MV-Z02,par_light,µmol/m²/s
+sensor:MV-Z02-stemp,MV-Z02-stemp,MV-Z02,substrate_temperature,°C
+sensor:MV-Z02-smoist,MV-Z02-smoist,MV-Z02,substrate_moisture,%
+sensor:MV-Z02-ec,MV-Z02-ec,MV-Z02,substrate_ec,mS/cm
+sensor:MV-Z02-ph,MV-Z02-ph,MV-Z02,substrate_ph,pH
+sensor:MV-Z02-flow,MV-Z02-flow,MV-Z02,water_flow_rate,L/min
+sensor:MV-Z02-vpd,MV-Z02-vpd,MV-Z02,vpd,kPa
+sensor:MV-Z03-temp,MV-Z03-temp,MV-Z03,air_temperature,°C
+sensor:MV-Z03-hum,MV-Z03-hum,MV-Z03,air_humidity,%
+sensor:MV-Z03-co2,MV-Z03-co2,MV-Z03,co2_level,ppm
+sensor:MV-Z03-par,MV-Z03-par,MV-Z03,par_light,µmol/m²/s
+sensor:MV-Z03-stemp,MV-Z03-stemp,MV-Z03,substrate_temperature,°C
+sensor:MV-Z03-smoist,MV-Z03-smoist,MV-Z03,substrate_moisture,%
+sensor:MV-Z03-ec,MV-Z03-ec,MV-Z03,substrate_ec,mS/cm
+sensor:MV-Z03-ph,MV-Z03-ph,MV-Z03,substrate_ph,pH
+sensor:MV-Z03-flow,MV-Z03-flow,MV-Z03,water_flow_rate,L/min
+sensor:MV-Z03-vpd,MV-Z03-vpd,MV-Z03,vpd,kPa
+sensor:MV-Z04-temp,MV-Z04-temp,MV-Z04,air_temperature,°C
+sensor:MV-Z04-hum,MV-Z04-hum,MV-Z04,air_humidity,%
+sensor:MV-Z04-co2,MV-Z04-co2,MV-Z04,co2_level,ppm
+sensor:MV-Z04-par,MV-Z04-par,MV-Z04,par_light,µmol/m²/s
+sensor:MV-Z04-stemp,MV-Z04-stemp,MV-Z04,substrate_temperature,°C
+sensor:MV-Z04-smoist,MV-Z04-smoist,MV-Z04,substrate_moisture,%
+sensor:MV-Z04-ec,MV-Z04-ec,MV-Z04,substrate_ec,mS/cm
+sensor:MV-Z04-ph,MV-Z04-ph,MV-Z04,substrate_ph,pH
+sensor:MV-Z04-flow,MV-Z04-flow,MV-Z04,water_flow_rate,L/min
+sensor:MV-Z04-vpd,MV-Z04-vpd,MV-Z04,vpd,kPa
+sensor:MV-Z05-temp,MV-Z05-temp,MV-Z05,air_temperature,°C
+sensor:MV-Z05-hum,MV-Z05-hum,MV-Z05,air_humidity,%
+sensor:MV-Z05-co2,MV-Z05-co2,MV-Z05,co2_level,ppm
+sensor:MV-Z05-par,MV-Z05-par,MV-Z05,par_light,µmol/m²/s
+sensor:MV-Z05-stemp,MV-Z05-stemp,MV-Z05,substrate_temperature,°C
+sensor:MV-Z05-smoist,MV-Z05-smoist,MV-Z05,substrate_moisture,%
+sensor:MV-Z05-ec,MV-Z05-ec,MV-Z05,substrate_ec,mS/cm
+sensor:MV-Z05-ph,MV-Z05-ph,MV-Z05,substrate_ph,pH
+sensor:MV-Z05-flow,MV-Z05-flow,MV-Z05,water_flow_rate,L/min
+sensor:MV-Z05-vpd,MV-Z05-vpd,MV-Z05,vpd,kPa
+sensor:MV-Z06-temp,MV-Z06-temp,MV-Z06,air_temperature,°C
+sensor:MV-Z06-hum,MV-Z06-hum,MV-Z06,air_humidity,%
+sensor:MV-Z06-co2,MV-Z06-co2,MV-Z06,co2_level,ppm
+sensor:MV-Z06-par,MV-Z06-par,MV-Z06,par_light,µmol/m²/s
+sensor:MV-Z06-stemp,MV-Z06-stemp,MV-Z06,substrate_temperature,°C
+sensor:MV-Z06-smoist,MV-Z06-smoist,MV-Z06,substrate_moisture,%
+sensor:MV-Z06-ec,MV-Z06-ec,MV-Z06,substrate_ec,mS/cm
+sensor:MV-Z06-ph,MV-Z06-ph,MV-Z06,substrate_ph,pH
+sensor:MV-Z06-flow,MV-Z06-flow,MV-Z06,water_flow_rate,L/min
+sensor:MV-Z06-vpd,MV-Z06-vpd,MV-Z06,vpd,kPa
+sensor:MV-Z07-temp,MV-Z07-temp,MV-Z07,air_temperature,°C
+sensor:MV-Z07-hum,MV-Z07-hum,MV-Z07,air_humidity,%
+sensor:MV-Z07-co2,MV-Z07-co2,MV-Z07,co2_level,ppm
+sensor:MV-Z07-par,MV-Z07-par,MV-Z07,par_light,µmol/m²/s
+sensor:MV-Z07-stemp,MV-Z07-stemp,MV-Z07,substrate_temperature,°C
+sensor:MV-Z07-smoist,MV-Z07-smoist,MV-Z07,substrate_moisture,%
+sensor:MV-Z07-ec,MV-Z07-ec,MV-Z07,substrate_ec,mS/cm
+sensor:MV-Z07-ph,MV-Z07-ph,MV-Z07,substrate_ph,pH
+sensor:MV-Z07-flow,MV-Z07-flow,MV-Z07,water_flow_rate,L/min
+sensor:MV-Z07-vpd,MV-Z07-vpd,MV-Z07,vpd,kPa
+sensor:MV-Z08-temp,MV-Z08-temp,MV-Z08,air_temperature,°C
+sensor:MV-Z08-hum,MV-Z08-hum,MV-Z08,air_humidity,%
+sensor:MV-Z08-co2,MV-Z08-co2,MV-Z08,co2_level,ppm
+sensor:MV-Z08-par,MV-Z08-par,MV-Z08,par_light,µmol/m²/s
+sensor:MV-Z08-stemp,MV-Z08-stemp,MV-Z08,substrate_temperature,°C
+sensor:MV-Z08-smoist,MV-Z08-smoist,MV-Z08,substrate_moisture,%
+sensor:MV-Z08-ec,MV-Z08-ec,MV-Z08,substrate_ec,mS/cm
+sensor:MV-Z08-ph,MV-Z08-ph,MV-Z08,substrate_ph,pH
+sensor:MV-Z08-flow,MV-Z08-flow,MV-Z08,water_flow_rate,L/min
+sensor:MV-Z08-vpd,MV-Z08-vpd,MV-Z08,vpd,kPa
+
+// --- 3e. Equipment (128 — 8 per zone) ---
+// BrightHarvest Greens equipment
+.ingest inline into table GraphNode_Equipment <|
+equip:BH-Z01-boiler,BH-Z01-boiler,BH-Z01,boiler,Hot Water Boiler,true
+equip:BH-Z01-heatpipe,BH-Z01-heatpipe,BH-Z01,heat_pipe,Heating Pipe Network,true
+equip:BH-Z01-exhaust,BH-Z01-exhaust,BH-Z01,exhaust_fan,Exhaust Fan,false
+equip:BH-Z01-vent,BH-Z01-vent,BH-Z01,roof_vent,Roof Vent Actuator,false
+equip:BH-Z01-irpump,BH-Z01-irpump,BH-Z01,irrigation_pump,Irrigation Pump,true
+equip:BH-Z01-recpump,BH-Z01-recpump,BH-Z01,recirc_pump,Recirculation Pump,true
+equip:BH-Z01-co2gen,BH-Z01-co2gen,BH-Z01,co2_generator,CO₂ Generator,false
+equip:BH-Z01-lights,BH-Z01-lights,BH-Z01,grow_lights,Supplemental LED Lights,false
+equip:BH-Z02-boiler,BH-Z02-boiler,BH-Z02,boiler,Hot Water Boiler,true
+equip:BH-Z02-heatpipe,BH-Z02-heatpipe,BH-Z02,heat_pipe,Heating Pipe Network,true
+equip:BH-Z02-exhaust,BH-Z02-exhaust,BH-Z02,exhaust_fan,Exhaust Fan,false
+equip:BH-Z02-vent,BH-Z02-vent,BH-Z02,roof_vent,Roof Vent Actuator,false
+equip:BH-Z02-irpump,BH-Z02-irpump,BH-Z02,irrigation_pump,Irrigation Pump,true
+equip:BH-Z02-recpump,BH-Z02-recpump,BH-Z02,recirc_pump,Recirculation Pump,true
+equip:BH-Z02-co2gen,BH-Z02-co2gen,BH-Z02,co2_generator,CO₂ Generator,false
+equip:BH-Z02-lights,BH-Z02-lights,BH-Z02,grow_lights,Supplemental LED Lights,false
+equip:BH-Z03-boiler,BH-Z03-boiler,BH-Z03,boiler,Hot Water Boiler,true
+equip:BH-Z03-heatpipe,BH-Z03-heatpipe,BH-Z03,heat_pipe,Heating Pipe Network,true
+equip:BH-Z03-exhaust,BH-Z03-exhaust,BH-Z03,exhaust_fan,Exhaust Fan,false
+equip:BH-Z03-vent,BH-Z03-vent,BH-Z03,roof_vent,Roof Vent Actuator,false
+equip:BH-Z03-irpump,BH-Z03-irpump,BH-Z03,irrigation_pump,Irrigation Pump,true
+equip:BH-Z03-recpump,BH-Z03-recpump,BH-Z03,recirc_pump,Recirculation Pump,true
+equip:BH-Z03-co2gen,BH-Z03-co2gen,BH-Z03,co2_generator,CO₂ Generator,false
+equip:BH-Z03-lights,BH-Z03-lights,BH-Z03,grow_lights,Supplemental LED Lights,false
+equip:BH-Z04-boiler,BH-Z04-boiler,BH-Z04,boiler,Hot Water Boiler,true
+equip:BH-Z04-heatpipe,BH-Z04-heatpipe,BH-Z04,heat_pipe,Heating Pipe Network,true
+equip:BH-Z04-exhaust,BH-Z04-exhaust,BH-Z04,exhaust_fan,Exhaust Fan,false
+equip:BH-Z04-vent,BH-Z04-vent,BH-Z04,roof_vent,Roof Vent Actuator,false
+equip:BH-Z04-irpump,BH-Z04-irpump,BH-Z04,irrigation_pump,Irrigation Pump,true
+equip:BH-Z04-recpump,BH-Z04-recpump,BH-Z04,recirc_pump,Recirculation Pump,true
+equip:BH-Z04-co2gen,BH-Z04-co2gen,BH-Z04,co2_generator,CO₂ Generator,false
+equip:BH-Z04-lights,BH-Z04-lights,BH-Z04,grow_lights,Supplemental LED Lights,false
+equip:BH-Z05-boiler,BH-Z05-boiler,BH-Z05,boiler,Hot Water Boiler,true
+equip:BH-Z05-heatpipe,BH-Z05-heatpipe,BH-Z05,heat_pipe,Heating Pipe Network,true
+equip:BH-Z05-exhaust,BH-Z05-exhaust,BH-Z05,exhaust_fan,Exhaust Fan,false
+equip:BH-Z05-vent,BH-Z05-vent,BH-Z05,roof_vent,Roof Vent Actuator,false
+equip:BH-Z05-irpump,BH-Z05-irpump,BH-Z05,irrigation_pump,Irrigation Pump,true
+equip:BH-Z05-recpump,BH-Z05-recpump,BH-Z05,recirc_pump,Recirculation Pump,true
+equip:BH-Z05-co2gen,BH-Z05-co2gen,BH-Z05,co2_generator,CO₂ Generator,false
+equip:BH-Z05-lights,BH-Z05-lights,BH-Z05,grow_lights,Supplemental LED Lights,false
+equip:BH-Z06-boiler,BH-Z06-boiler,BH-Z06,boiler,Hot Water Boiler,true
+equip:BH-Z06-heatpipe,BH-Z06-heatpipe,BH-Z06,heat_pipe,Heating Pipe Network,true
+equip:BH-Z06-exhaust,BH-Z06-exhaust,BH-Z06,exhaust_fan,Exhaust Fan,false
+equip:BH-Z06-vent,BH-Z06-vent,BH-Z06,roof_vent,Roof Vent Actuator,false
+equip:BH-Z06-irpump,BH-Z06-irpump,BH-Z06,irrigation_pump,Irrigation Pump,true
+equip:BH-Z06-recpump,BH-Z06-recpump,BH-Z06,recirc_pump,Recirculation Pump,true
+equip:BH-Z06-co2gen,BH-Z06-co2gen,BH-Z06,co2_generator,CO₂ Generator,false
+equip:BH-Z06-lights,BH-Z06-lights,BH-Z06,grow_lights,Supplemental LED Lights,false
+equip:BH-Z07-boiler,BH-Z07-boiler,BH-Z07,boiler,Hot Water Boiler,true
+equip:BH-Z07-heatpipe,BH-Z07-heatpipe,BH-Z07,heat_pipe,Heating Pipe Network,true
+equip:BH-Z07-exhaust,BH-Z07-exhaust,BH-Z07,exhaust_fan,Exhaust Fan,false
+equip:BH-Z07-vent,BH-Z07-vent,BH-Z07,roof_vent,Roof Vent Actuator,false
+equip:BH-Z07-irpump,BH-Z07-irpump,BH-Z07,irrigation_pump,Irrigation Pump,true
+equip:BH-Z07-recpump,BH-Z07-recpump,BH-Z07,recirc_pump,Recirculation Pump,true
+equip:BH-Z07-co2gen,BH-Z07-co2gen,BH-Z07,co2_generator,CO₂ Generator,false
+equip:BH-Z07-lights,BH-Z07-lights,BH-Z07,grow_lights,Supplemental LED Lights,false
+equip:BH-Z08-boiler,BH-Z08-boiler,BH-Z08,boiler,Hot Water Boiler,true
+equip:BH-Z08-heatpipe,BH-Z08-heatpipe,BH-Z08,heat_pipe,Heating Pipe Network,true
+equip:BH-Z08-exhaust,BH-Z08-exhaust,BH-Z08,exhaust_fan,Exhaust Fan,false
+equip:BH-Z08-vent,BH-Z08-vent,BH-Z08,roof_vent,Roof Vent Actuator,false
+equip:BH-Z08-irpump,BH-Z08-irpump,BH-Z08,irrigation_pump,Irrigation Pump,true
+equip:BH-Z08-recpump,BH-Z08-recpump,BH-Z08,recirc_pump,Recirculation Pump,true
+equip:BH-Z08-co2gen,BH-Z08-co2gen,BH-Z08,co2_generator,CO₂ Generator,false
+equip:BH-Z08-lights,BH-Z08-lights,BH-Z08,grow_lights,Supplemental LED Lights,false
+
+// Mucci Valley Farms equipment
+.ingest inline into table GraphNode_Equipment <|
+equip:MV-Z01-boiler,MV-Z01-boiler,MV-Z01,boiler,Hot Water Boiler,true
+equip:MV-Z01-heatpipe,MV-Z01-heatpipe,MV-Z01,heat_pipe,Heating Pipe Network,true
+equip:MV-Z01-exhaust,MV-Z01-exhaust,MV-Z01,exhaust_fan,Exhaust Fan,false
+equip:MV-Z01-vent,MV-Z01-vent,MV-Z01,roof_vent,Roof Vent Actuator,false
+equip:MV-Z01-irpump,MV-Z01-irpump,MV-Z01,irrigation_pump,Irrigation Pump,true
+equip:MV-Z01-recpump,MV-Z01-recpump,MV-Z01,recirc_pump,Recirculation Pump,true
+equip:MV-Z01-co2gen,MV-Z01-co2gen,MV-Z01,co2_generator,CO₂ Generator,false
+equip:MV-Z01-lights,MV-Z01-lights,MV-Z01,grow_lights,Supplemental LED Lights,false
+equip:MV-Z02-boiler,MV-Z02-boiler,MV-Z02,boiler,Hot Water Boiler,true
+equip:MV-Z02-heatpipe,MV-Z02-heatpipe,MV-Z02,heat_pipe,Heating Pipe Network,true
+equip:MV-Z02-exhaust,MV-Z02-exhaust,MV-Z02,exhaust_fan,Exhaust Fan,false
+equip:MV-Z02-vent,MV-Z02-vent,MV-Z02,roof_vent,Roof Vent Actuator,false
+equip:MV-Z02-irpump,MV-Z02-irpump,MV-Z02,irrigation_pump,Irrigation Pump,true
+equip:MV-Z02-recpump,MV-Z02-recpump,MV-Z02,recirc_pump,Recirculation Pump,true
+equip:MV-Z02-co2gen,MV-Z02-co2gen,MV-Z02,co2_generator,CO₂ Generator,false
+equip:MV-Z02-lights,MV-Z02-lights,MV-Z02,grow_lights,Supplemental LED Lights,false
+equip:MV-Z03-boiler,MV-Z03-boiler,MV-Z03,boiler,Hot Water Boiler,true
+equip:MV-Z03-heatpipe,MV-Z03-heatpipe,MV-Z03,heat_pipe,Heating Pipe Network,true
+equip:MV-Z03-exhaust,MV-Z03-exhaust,MV-Z03,exhaust_fan,Exhaust Fan,false
+equip:MV-Z03-vent,MV-Z03-vent,MV-Z03,roof_vent,Roof Vent Actuator,false
+equip:MV-Z03-irpump,MV-Z03-irpump,MV-Z03,irrigation_pump,Irrigation Pump,true
+equip:MV-Z03-recpump,MV-Z03-recpump,MV-Z03,recirc_pump,Recirculation Pump,true
+equip:MV-Z03-co2gen,MV-Z03-co2gen,MV-Z03,co2_generator,CO₂ Generator,false
+equip:MV-Z03-lights,MV-Z03-lights,MV-Z03,grow_lights,Supplemental LED Lights,false
+equip:MV-Z04-boiler,MV-Z04-boiler,MV-Z04,boiler,Hot Water Boiler,true
+equip:MV-Z04-heatpipe,MV-Z04-heatpipe,MV-Z04,heat_pipe,Heating Pipe Network,true
+equip:MV-Z04-exhaust,MV-Z04-exhaust,MV-Z04,exhaust_fan,Exhaust Fan,false
+equip:MV-Z04-vent,MV-Z04-vent,MV-Z04,roof_vent,Roof Vent Actuator,false
+equip:MV-Z04-irpump,MV-Z04-irpump,MV-Z04,irrigation_pump,Irrigation Pump,true
+equip:MV-Z04-recpump,MV-Z04-recpump,MV-Z04,recirc_pump,Recirculation Pump,true
+equip:MV-Z04-co2gen,MV-Z04-co2gen,MV-Z04,co2_generator,CO₂ Generator,false
+equip:MV-Z04-lights,MV-Z04-lights,MV-Z04,grow_lights,Supplemental LED Lights,false
+equip:MV-Z05-boiler,MV-Z05-boiler,MV-Z05,boiler,Hot Water Boiler,true
+equip:MV-Z05-heatpipe,MV-Z05-heatpipe,MV-Z05,heat_pipe,Heating Pipe Network,true
+equip:MV-Z05-exhaust,MV-Z05-exhaust,MV-Z05,exhaust_fan,Exhaust Fan,false
+equip:MV-Z05-vent,MV-Z05-vent,MV-Z05,roof_vent,Roof Vent Actuator,false
+equip:MV-Z05-irpump,MV-Z05-irpump,MV-Z05,irrigation_pump,Irrigation Pump,true
+equip:MV-Z05-recpump,MV-Z05-recpump,MV-Z05,recirc_pump,Recirculation Pump,true
+equip:MV-Z05-co2gen,MV-Z05-co2gen,MV-Z05,co2_generator,CO₂ Generator,false
+equip:MV-Z05-lights,MV-Z05-lights,MV-Z05,grow_lights,Supplemental LED Lights,false
+equip:MV-Z06-boiler,MV-Z06-boiler,MV-Z06,boiler,Hot Water Boiler,true
+equip:MV-Z06-heatpipe,MV-Z06-heatpipe,MV-Z06,heat_pipe,Heating Pipe Network,true
+equip:MV-Z06-exhaust,MV-Z06-exhaust,MV-Z06,exhaust_fan,Exhaust Fan,false
+equip:MV-Z06-vent,MV-Z06-vent,MV-Z06,roof_vent,Roof Vent Actuator,false
+equip:MV-Z06-irpump,MV-Z06-irpump,MV-Z06,irrigation_pump,Irrigation Pump,true
+equip:MV-Z06-recpump,MV-Z06-recpump,MV-Z06,recirc_pump,Recirculation Pump,true
+equip:MV-Z06-co2gen,MV-Z06-co2gen,MV-Z06,co2_generator,CO₂ Generator,false
+equip:MV-Z06-lights,MV-Z06-lights,MV-Z06,grow_lights,Supplemental LED Lights,false
+equip:MV-Z07-boiler,MV-Z07-boiler,MV-Z07,boiler,Hot Water Boiler,true
+equip:MV-Z07-heatpipe,MV-Z07-heatpipe,MV-Z07,heat_pipe,Heating Pipe Network,true
+equip:MV-Z07-exhaust,MV-Z07-exhaust,MV-Z07,exhaust_fan,Exhaust Fan,false
+equip:MV-Z07-vent,MV-Z07-vent,MV-Z07,roof_vent,Roof Vent Actuator,false
+equip:MV-Z07-irpump,MV-Z07-irpump,MV-Z07,irrigation_pump,Irrigation Pump,true
+equip:MV-Z07-recpump,MV-Z07-recpump,MV-Z07,recirc_pump,Recirculation Pump,true
+equip:MV-Z07-co2gen,MV-Z07-co2gen,MV-Z07,co2_generator,CO₂ Generator,false
+equip:MV-Z07-lights,MV-Z07-lights,MV-Z07,grow_lights,Supplemental LED Lights,false
+equip:MV-Z08-boiler,MV-Z08-boiler,MV-Z08,boiler,Hot Water Boiler,true
+equip:MV-Z08-heatpipe,MV-Z08-heatpipe,MV-Z08,heat_pipe,Heating Pipe Network,true
+equip:MV-Z08-exhaust,MV-Z08-exhaust,MV-Z08,exhaust_fan,Exhaust Fan,false
+equip:MV-Z08-vent,MV-Z08-vent,MV-Z08,roof_vent,Roof Vent Actuator,false
+equip:MV-Z08-irpump,MV-Z08-irpump,MV-Z08,irrigation_pump,Irrigation Pump,true
+equip:MV-Z08-recpump,MV-Z08-recpump,MV-Z08,recirc_pump,Recirculation Pump,true
+equip:MV-Z08-co2gen,MV-Z08-co2gen,MV-Z08,co2_generator,CO₂ Generator,false
+equip:MV-Z08-lights,MV-Z08-lights,MV-Z08,grow_lights,Supplemental LED Lights,false
+
+// --- 3f. AnomalyType nodes (4 demo scenarios) ---
+.ingest inline into table GraphNode_AnomalyType <|
+anomaly:hvac-failure,hvac-failure,HVAC Failure,critical,Boiler or heating pipe offline causing temperature drop below crop setpoint
+anomaly:nutrient-drift,nutrient-drift,Nutrient Drift,warning,pH and/or EC drifting outside optimal range indicating dosing pump malfunction
+anomaly:irrigation-failure,irrigation-failure,Irrigation Failure,critical,Irrigation pump failure causing substrate moisture to drop rapidly
+anomaly:cold-chain-break,cold-chain-break,Cold Chain Break,critical,Post-harvest refrigeration failure causing product temperature to exceed 5°C
+
+// --- 3g. RunbookAction nodes (prioritized steps per anomaly type) ---
+.ingest inline into table GraphNode_RunbookAction <|
+runbook:hvac-1,hvac-1,hvac-failure,1,Verify Boiler Status,Check boiler control panel for error codes and fuel supply status,false,5
+runbook:hvac-2,hvac-2,hvac-failure,2,Check Heat Pipe Circulation,Verify hot water circulation pump is running and pipes are warm,false,10
+runbook:hvac-3,hvac-3,hvac-failure,3,Activate Backup Heater,Switch to backup propane heater if boiler cannot be restarted,false,15
+runbook:hvac-4,hvac-4,hvac-failure,4,Close Vents and Curtains,Close all roof vents and deploy thermal curtains to retain heat,true,2
+runbook:hvac-5,hvac-5,hvac-failure,5,Notify Maintenance Team,Send Teams alert to on-call maintenance engineer with zone details,true,1
+runbook:hvac-6,hvac-6,hvac-failure,6,Log Incident,Create incident ticket with timestamp and affected zone details,true,1
+runbook:nutrient-1,nutrient-1,nutrient-drift,1,Check Dosing Pump,Inspect nutrient dosing pump for blockages or calibration drift,false,10
+runbook:nutrient-2,nutrient-2,nutrient-drift,2,Test Solution Sample,Take manual sample of nutrient solution and test pH/EC with handheld meter,false,15
+runbook:nutrient-3,nutrient-3,nutrient-drift,3,Flush Irrigation Lines,Run clean water flush cycle through affected zone irrigation lines,false,20
+runbook:nutrient-4,nutrient-4,nutrient-drift,4,Recalibrate Sensors,Recalibrate pH and EC sensors with buffer solutions,false,30
+runbook:nutrient-5,nutrient-5,nutrient-drift,5,Notify Grower,Alert head grower via Teams with pH/EC readings and deviation trend,true,1
+runbook:irrigation-1,irrigation-1,irrigation-failure,1,Check Pump Power,Verify irrigation pump has power and circuit breaker is not tripped,false,5
+runbook:irrigation-2,irrigation-2,irrigation-failure,2,Inspect Pump Intake,Check pump intake filter for debris or clogging,false,10
+runbook:irrigation-3,irrigation-3,irrigation-failure,3,Verify Flow Sensors,Cross-check flow meter readings with visual pipe inspection,false,10
+runbook:irrigation-4,irrigation-4,irrigation-failure,4,Activate Manual Watering,Switch to manual overhead watering for affected zones,false,15
+runbook:irrigation-5,irrigation-5,irrigation-failure,5,Notify Operations,Send Teams alert to operations team with moisture trend data,true,1
+runbook:coldchain-1,coldchain-1,cold-chain-break,1,Check Reefer Unit,Verify refrigeration unit on transport vehicle is running,false,5
+runbook:coldchain-2,coldchain-2,cold-chain-break,2,Check Door Seals,Inspect trailer door seals for gaps or damage,false,10
+runbook:coldchain-3,coldchain-3,cold-chain-break,3,Move Product to Backup,Transfer affected pallets to backup cold storage if available,false,30
+runbook:coldchain-4,coldchain-4,cold-chain-break,4,Document Temperature Log,Export temperature logger data for QA incident report,true,5
+runbook:coldchain-5,coldchain-5,cold-chain-break,5,Notify Quality Team,Alert QA manager via Teams and email with temperature exceedance details,true,1
+
+
+// =============================================================================
+// SECTION 4 — SEED EDGE DATA
+// =============================================================================
+
+// --- 4a. contains: Greenhouse → Zone ---
+.ingest inline into table GraphEdge_Contains <|
+greenhouse:brightharvest,zone:BH-Z01,contains
+greenhouse:brightharvest,zone:BH-Z02,contains
+greenhouse:brightharvest,zone:BH-Z03,contains
+greenhouse:brightharvest,zone:BH-Z04,contains
+greenhouse:brightharvest,zone:BH-Z05,contains
+greenhouse:brightharvest,zone:BH-Z06,contains
+greenhouse:brightharvest,zone:BH-Z07,contains
+greenhouse:brightharvest,zone:BH-Z08,contains
+greenhouse:mucci-valley,zone:MV-Z01,contains
+greenhouse:mucci-valley,zone:MV-Z02,contains
+greenhouse:mucci-valley,zone:MV-Z03,contains
+greenhouse:mucci-valley,zone:MV-Z04,contains
+greenhouse:mucci-valley,zone:MV-Z05,contains
+greenhouse:mucci-valley,zone:MV-Z06,contains
+greenhouse:mucci-valley,zone:MV-Z07,contains
+greenhouse:mucci-valley,zone:MV-Z08,contains
+
+// --- 4b. grows: Zone → Crop ---
+.ingest inline into table GraphEdge_Grows <|
+zone:BH-Z01,crop:baby_spinach,grows
+zone:BH-Z02,crop:baby_spinach,grows
+zone:BH-Z03,crop:romaine,grows
+zone:BH-Z04,crop:romaine,grows
+zone:BH-Z05,crop:arugula,grows
+zone:BH-Z06,crop:arugula,grows
+zone:BH-Z07,crop:basil,grows
+zone:BH-Z08,crop:basil,grows
+zone:MV-Z01,crop:cocktail_tomato,grows
+zone:MV-Z02,crop:cocktail_tomato,grows
+zone:MV-Z03,crop:bell_pepper,grows
+zone:MV-Z04,crop:bell_pepper,grows
+zone:MV-Z05,crop:mini_cucumber,grows
+zone:MV-Z06,crop:mini_cucumber,grows
+zone:MV-Z07,crop:strawberry,grows
+zone:MV-Z08,crop:strawberry,grows
+
+// --- 4c. adjacent_to: Zone ↔ Zone (sequential zones share walls) ---
+.ingest inline into table GraphEdge_AdjacentTo <|
+zone:BH-Z01,zone:BH-Z02,adjacent_to
+zone:BH-Z02,zone:BH-Z01,adjacent_to
+zone:BH-Z02,zone:BH-Z03,adjacent_to
+zone:BH-Z03,zone:BH-Z02,adjacent_to
+zone:BH-Z03,zone:BH-Z04,adjacent_to
+zone:BH-Z04,zone:BH-Z03,adjacent_to
+zone:BH-Z04,zone:BH-Z05,adjacent_to
+zone:BH-Z05,zone:BH-Z04,adjacent_to
+zone:BH-Z05,zone:BH-Z06,adjacent_to
+zone:BH-Z06,zone:BH-Z05,adjacent_to
+zone:BH-Z06,zone:BH-Z07,adjacent_to
+zone:BH-Z07,zone:BH-Z06,adjacent_to
+zone:BH-Z07,zone:BH-Z08,adjacent_to
+zone:BH-Z08,zone:BH-Z07,adjacent_to
+zone:MV-Z01,zone:MV-Z02,adjacent_to
+zone:MV-Z02,zone:MV-Z01,adjacent_to
+zone:MV-Z02,zone:MV-Z03,adjacent_to
+zone:MV-Z03,zone:MV-Z02,adjacent_to
+zone:MV-Z03,zone:MV-Z04,adjacent_to
+zone:MV-Z04,zone:MV-Z03,adjacent_to
+zone:MV-Z04,zone:MV-Z05,adjacent_to
+zone:MV-Z05,zone:MV-Z04,adjacent_to
+zone:MV-Z05,zone:MV-Z06,adjacent_to
+zone:MV-Z06,zone:MV-Z05,adjacent_to
+zone:MV-Z06,zone:MV-Z07,adjacent_to
+zone:MV-Z07,zone:MV-Z06,adjacent_to
+zone:MV-Z07,zone:MV-Z08,adjacent_to
+zone:MV-Z08,zone:MV-Z07,adjacent_to
+
+// --- 4d. depends_on: Equipment → Equipment ---
+// Heating pipe depends on boiler; irrigation pump depends on recirc pump
+.ingest inline into table GraphEdge_DependsOn <|
+equip:BH-Z01-heatpipe,equip:BH-Z01-boiler,depends_on,thermal
+equip:BH-Z01-irpump,equip:BH-Z01-recpump,depends_on,hydraulic
+equip:BH-Z02-heatpipe,equip:BH-Z02-boiler,depends_on,thermal
+equip:BH-Z02-irpump,equip:BH-Z02-recpump,depends_on,hydraulic
+equip:BH-Z03-heatpipe,equip:BH-Z03-boiler,depends_on,thermal
+equip:BH-Z03-irpump,equip:BH-Z03-recpump,depends_on,hydraulic
+equip:BH-Z04-heatpipe,equip:BH-Z04-boiler,depends_on,thermal
+equip:BH-Z04-irpump,equip:BH-Z04-recpump,depends_on,hydraulic
+equip:BH-Z05-heatpipe,equip:BH-Z05-boiler,depends_on,thermal
+equip:BH-Z05-irpump,equip:BH-Z05-recpump,depends_on,hydraulic
+equip:BH-Z06-heatpipe,equip:BH-Z06-boiler,depends_on,thermal
+equip:BH-Z06-irpump,equip:BH-Z06-recpump,depends_on,hydraulic
+equip:BH-Z07-heatpipe,equip:BH-Z07-boiler,depends_on,thermal
+equip:BH-Z07-irpump,equip:BH-Z07-recpump,depends_on,hydraulic
+equip:BH-Z08-heatpipe,equip:BH-Z08-boiler,depends_on,thermal
+equip:BH-Z08-irpump,equip:BH-Z08-recpump,depends_on,hydraulic
+equip:MV-Z01-heatpipe,equip:MV-Z01-boiler,depends_on,thermal
+equip:MV-Z01-irpump,equip:MV-Z01-recpump,depends_on,hydraulic
+equip:MV-Z02-heatpipe,equip:MV-Z02-boiler,depends_on,thermal
+equip:MV-Z02-irpump,equip:MV-Z02-recpump,depends_on,hydraulic
+equip:MV-Z03-heatpipe,equip:MV-Z03-boiler,depends_on,thermal
+equip:MV-Z03-irpump,equip:MV-Z03-recpump,depends_on,hydraulic
+equip:MV-Z04-heatpipe,equip:MV-Z04-boiler,depends_on,thermal
+equip:MV-Z04-irpump,equip:MV-Z04-recpump,depends_on,hydraulic
+equip:MV-Z05-heatpipe,equip:MV-Z05-boiler,depends_on,thermal
+equip:MV-Z05-irpump,equip:MV-Z05-recpump,depends_on,hydraulic
+equip:MV-Z06-heatpipe,equip:MV-Z06-boiler,depends_on,thermal
+equip:MV-Z06-irpump,equip:MV-Z06-recpump,depends_on,hydraulic
+equip:MV-Z07-heatpipe,equip:MV-Z07-boiler,depends_on,thermal
+equip:MV-Z07-irpump,equip:MV-Z07-recpump,depends_on,hydraulic
+equip:MV-Z08-heatpipe,equip:MV-Z08-boiler,depends_on,thermal
+equip:MV-Z08-irpump,equip:MV-Z08-recpump,depends_on,hydraulic
+
+// --- 4e. resolves_with: AnomalyType → RunbookAction ---
+.ingest inline into table GraphEdge_ResolvesWith <|
+anomaly:hvac-failure,runbook:hvac-1,resolves_with
+anomaly:hvac-failure,runbook:hvac-2,resolves_with
+anomaly:hvac-failure,runbook:hvac-3,resolves_with
+anomaly:hvac-failure,runbook:hvac-4,resolves_with
+anomaly:hvac-failure,runbook:hvac-5,resolves_with
+anomaly:hvac-failure,runbook:hvac-6,resolves_with
+anomaly:nutrient-drift,runbook:nutrient-1,resolves_with
+anomaly:nutrient-drift,runbook:nutrient-2,resolves_with
+anomaly:nutrient-drift,runbook:nutrient-3,resolves_with
+anomaly:nutrient-drift,runbook:nutrient-4,resolves_with
+anomaly:nutrient-drift,runbook:nutrient-5,resolves_with
+anomaly:irrigation-failure,runbook:irrigation-1,resolves_with
+anomaly:irrigation-failure,runbook:irrigation-2,resolves_with
+anomaly:irrigation-failure,runbook:irrigation-3,resolves_with
+anomaly:irrigation-failure,runbook:irrigation-4,resolves_with
+anomaly:irrigation-failure,runbook:irrigation-5,resolves_with
+anomaly:cold-chain-break,runbook:coldchain-1,resolves_with
+anomaly:cold-chain-break,runbook:coldchain-2,resolves_with
+anomaly:cold-chain-break,runbook:coldchain-3,resolves_with
+anomaly:cold-chain-break,runbook:coldchain-4,resolves_with
+anomaly:cold-chain-break,runbook:coldchain-5,resolves_with
+
+
+// =============================================================================
+// SECTION 5 — GRAPH MODEL DEFINITION
+// =============================================================================
+// Creates the GreenhouseDigitalTwin graph model with typed nodes and edges.
+// This enables graph-match queries for blast-radius, dependency chain,
+// and runbook automation.
+
+.create-or-alter graph_model GreenhouseDigitalTwin ```
+{
+  "Schema": {
+    "Nodes": [
+      {
+        "Label": "Greenhouse",
+        "Table": "GraphNode_Greenhouse",
+        "IdColumn": "node_id",
+        "Properties": ["name", "location", "country", "zone_count", "size_sqft"]
+      },
+      {
+        "Label": "Zone",
+        "Table": "GraphNode_Zone",
+        "IdColumn": "node_id",
+        "Properties": ["zone_id", "greenhouse_id", "zone_name", "crop_id", "crop_name", "size_sqft", "target_temperature", "target_humidity", "target_co2", "target_ph", "target_ec"]
+      },
+      {
+        "Label": "Sensor",
+        "Table": "GraphNode_Sensor",
+        "IdColumn": "node_id",
+        "Properties": ["sensor_id", "zone_id", "sensor_type", "unit"]
+      },
+      {
+        "Label": "Crop",
+        "Table": "GraphNode_Crop",
+        "IdColumn": "node_id",
+        "Properties": ["crop_id", "crop_name", "category", "optimal_temp_low", "optimal_temp_high", "days_to_harvest"]
+      },
+      {
+        "Label": "Equipment",
+        "Table": "GraphNode_Equipment",
+        "IdColumn": "node_id",
+        "Properties": ["equipment_id", "zone_id", "equipment_type", "equipment_name", "is_critical"]
+      },
+      {
+        "Label": "RunbookAction",
+        "Table": "GraphNode_RunbookAction",
+        "IdColumn": "node_id",
+        "Properties": ["action_id", "anomaly_type", "step_order", "action_name", "description", "automated", "sla_minutes"]
+      },
+      {
+        "Label": "AnomalyType",
+        "Table": "GraphNode_AnomalyType",
+        "IdColumn": "node_id",
+        "Properties": ["anomaly_type", "display_name", "severity", "description"]
+      }
+    ],
+    "Edges": [
+      {
+        "Label": "contains",
+        "Table": "GraphEdge_Contains",
+        "SourceColumn": "source_id",
+        "TargetColumn": "target_id",
+        "Properties": ["relationship"]
+      },
+      {
+        "Label": "grows",
+        "Table": "GraphEdge_Grows",
+        "SourceColumn": "source_id",
+        "TargetColumn": "target_id",
+        "Properties": ["relationship"]
+      },
+      {
+        "Label": "has_sensor",
+        "Table": "GraphEdge_HasSensor",
+        "SourceColumn": "source_id",
+        "TargetColumn": "target_id",
+        "Properties": ["relationship"]
+      },
+      {
+        "Label": "controlled_by",
+        "Table": "GraphEdge_ControlledBy",
+        "SourceColumn": "source_id",
+        "TargetColumn": "target_id",
+        "Properties": ["relationship"]
+      },
+      {
+        "Label": "adjacent_to",
+        "Table": "GraphEdge_AdjacentTo",
+        "SourceColumn": "source_id",
+        "TargetColumn": "target_id",
+        "Properties": ["relationship"]
+      },
+      {
+        "Label": "depends_on",
+        "Table": "GraphEdge_DependsOn",
+        "SourceColumn": "source_id",
+        "TargetColumn": "target_id",
+        "Properties": ["relationship", "dependency_type"]
+      },
+      {
+        "Label": "resolves_with",
+        "Table": "GraphEdge_ResolvesWith",
+        "SourceColumn": "source_id",
+        "TargetColumn": "target_id",
+        "Properties": ["relationship"]
+      },
+      {
+        "Label": "triggers",
+        "Table": "GraphEdge_Triggers",
+        "SourceColumn": "source_id",
+        "TargetColumn": "target_id",
+        "Properties": ["relationship"]
+      }
+    ]
+  }
+}
+```
+
+
+// =============================================================================
+// SECTION 6 — DEMO GRAPH QUERIES
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// 6a. BLAST RADIUS QUERY
+//     "What's affected if Zone BH-Z05 goes down?"
+//     Traverses: Zone → adjacent zones, Zone → equipment, Zone → sensors,
+//     Zone → crop to show the full impact of a zone failure.
+// ---------------------------------------------------------------------------
+
+let all_nodes = union
+    (GraphNode_Greenhouse | project node_id, label = "Greenhouse", name = name),
+    (GraphNode_Zone | project node_id, label = "Zone", name = zone_name),
+    (GraphNode_Sensor | project node_id, label = "Sensor", name = sensor_type),
+    (GraphNode_Crop | project node_id, label = "Crop", name = crop_name),
+    (GraphNode_Equipment | project node_id, label = "Equipment", name = equipment_name);
+let all_edges = union
+    (GraphEdge_Contains | project source_id, target_id, edge_label = relationship),
+    (GraphEdge_Grows | project source_id, target_id, edge_label = relationship),
+    (GraphEdge_AdjacentTo | project source_id, target_id, edge_label = relationship),
+    (GraphEdge_DependsOn | project source_id, target_id, edge_label = relationship);
+all_nodes
+| make-graph source_id --> target_id on node_id with all_edges
+| graph-match (source)-[e*1..2]->(target)
+    where source.node_id == "zone:BH-Z05"
+    project 
+        source_name = source.name,
+        target_id = target.node_id,
+        target_name = target.name,
+        target_label = target.label
+
+
+// ---------------------------------------------------------------------------
+// 6b. RUNBOOK LOOKUP QUERY
+//     "What are the steps for an hvac-failure?"
+//     Traverses: AnomalyType → RunbookAction to return ordered steps.
+// ---------------------------------------------------------------------------
+
+let anomaly_nodes = GraphNode_AnomalyType
+    | project node_id, label = "AnomalyType", name = display_name, anomaly_type;
+let runbook_nodes = GraphNode_RunbookAction
+    | project node_id, label = "RunbookAction", name = action_name, 
+        anomaly_type, step_order, description, automated, sla_minutes;
+let resolve_edges = GraphEdge_ResolvesWith
+    | project source_id, target_id, edge_label = relationship;
+union anomaly_nodes, (runbook_nodes | project node_id, label, name)
+| make-graph source_id --> target_id on node_id with resolve_edges
+| graph-match (anomaly)-[resolves]->(action)
+    where anomaly.node_id == "anomaly:hvac-failure"
+    project 
+        anomaly_name = anomaly.name,
+        step = action.node_id
+| join kind=inner (GraphNode_RunbookAction) on $left.step == $right.node_id
+| project step_order, action_name, description, automated, sla_minutes
+| order by step_order asc
+
+
+// ---------------------------------------------------------------------------
+// 6c. EQUIPMENT DEPENDENCY CHAIN
+//     "What depends on the recirculation pump in BH-Z05?"
+//     Follows depends_on edges to show cascading equipment failures.
+// ---------------------------------------------------------------------------
+
+let equip_nodes = GraphNode_Equipment
+    | project node_id, label = "Equipment", name = equipment_name, 
+        equipment_type, zone_id, is_critical;
+let dep_edges = GraphEdge_DependsOn
+    | project source_id, target_id, edge_label = relationship, dependency_type;
+equip_nodes
+| make-graph source_id --> target_id on node_id with dep_edges
+| graph-match (dependent)-[dep]->(dependency)
+    where dependency.node_id == "equip:BH-Z05-recpump"
+    project
+        dependency_name = dependency.name,
+        dependency_zone = dependency.zone_id,
+        dependent_name = dependent.name,
+        dependent_zone = dependent.zone_id,
+        is_critical = dependent.is_critical
+
+
+// ---------------------------------------------------------------------------
+// 6d. FULL GREENHOUSE TOPOLOGY
+//     "Show me everything in BrightHarvest Greens"
+//     Traverses: Greenhouse → Zone → (Equipment, Sensor, Crop)
+// ---------------------------------------------------------------------------
+
+let all_nodes = union
+    (GraphNode_Greenhouse | project node_id, label = "Greenhouse", name = name),
+    (GraphNode_Zone | project node_id, label = "Zone", name = zone_name),
+    (GraphNode_Equipment | project node_id, label = "Equipment", name = equipment_name),
+    (GraphNode_Crop | project node_id, label = "Crop", name = crop_name);
+let all_edges = union
+    (GraphEdge_Contains | project source_id, target_id, edge_label = relationship),
+    (GraphEdge_Grows | project source_id, target_id, edge_label = relationship);
+all_nodes
+| make-graph source_id --> target_id on node_id with all_edges
+| graph-match (gh)-[e1]->(zone)-[e2]->(child)
+    where gh.node_id == "greenhouse:brightharvest"
+    project 
+        greenhouse = gh.name,
+        zone = zone.name,
+        child_type = child.label,
+        child_name = child.name
+| order by zone asc, child_type asc
